@@ -4,9 +4,12 @@ const state = {
     roomTypes: [],
     ratePlans: [],
     rooms: [],
+    reservations: [],
     roles: [],
     loadedSections: new Set(),
 };
+
+const CALENDAR_DAYS = 14;
 
 const notificationEl = document.getElementById('notification');
 const tokenInput = document.getElementById('api-token');
@@ -33,6 +36,50 @@ function requireToken() {
         return false;
     }
     return true;
+}
+
+function toLocalISODate(date = new Date()) {
+    if (!(date instanceof Date) || Number.isNaN(date.getTime())) {
+        return '';
+    }
+    const offset = date.getTimezoneOffset();
+    const local = new Date(date.getTime() - offset * 60000);
+    return local.toISOString().slice(0, 10);
+}
+
+function parseISODate(value) {
+    if (!value || typeof value !== 'string') {
+        return null;
+    }
+    const match = value.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    if (!match) {
+        return null;
+    }
+    const [, year, month, day] = match;
+    const date = new Date(Number(year), Number(month) - 1, Number(day));
+    return Number.isNaN(date.getTime()) ? null : date;
+}
+
+function addDays(date, amount) {
+    const result = new Date(date);
+    result.setDate(result.getDate() + amount);
+    return result;
+}
+
+function dateKey(date) {
+    return toLocalISODate(date);
+}
+
+function isWeekend(date) {
+    const day = date.getDay();
+    return day === 0 || day === 6;
+}
+
+function normalizeStatusClass(value) {
+    if (!value) {
+        return '';
+    }
+    return value.toString().toLowerCase().replace(/[^a-z0-9_-]/g, '');
 }
 
 async function apiFetch(path, options = {}) {
@@ -101,11 +148,11 @@ document.getElementById('clear-token').addEventListener('click', () => {
 
 function setDefaultDates() {
     const today = new Date();
-    const isoToday = today.toISOString().slice(0, 10);
+    const isoToday = toLocalISODate(today);
     if (!dashboardDateInput.value) {
         dashboardDateInput.value = isoToday;
     }
-    const monthStart = new Date(today.getFullYear(), today.getMonth(), 1).toISOString().slice(0, 10);
+    const monthStart = toLocalISODate(new Date(today.getFullYear(), today.getMonth(), 1));
     if (!reportStartInput.value) {
         reportStartInput.value = monthStart;
     }
@@ -134,14 +181,26 @@ function formatDate(value) {
     if (!value) {
         return '';
     }
-    return new Date(value).toLocaleDateString();
+    if (typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value)) {
+        const parsed = parseISODate(value);
+        return parsed ? new Intl.DateTimeFormat('de-DE').format(parsed) : value;
+    }
+    const date = new Date(value);
+    return Number.isNaN(date.getTime()) ? value : date.toLocaleDateString('de-DE');
 }
 
 function formatDateTime(value) {
     if (!value) {
         return '';
     }
-    return new Date(value).toLocaleString();
+    if (typeof value === 'string' && /^\d{4}-\d{2}-\d{2}(?:[ T]\d{2}:\d{2}(?::\d{2})?)?$/.test(value)) {
+        const normalized = value.replace(' ', 'T');
+        const withSeconds = normalized.length === 16 ? `${normalized}:00` : normalized;
+        const date = new Date(withSeconds);
+        return Number.isNaN(date.getTime()) ? value : date.toLocaleString('de-DE');
+    }
+    const date = new Date(value);
+    return Number.isNaN(date.getTime()) ? value : date.toLocaleString('de-DE');
 }
 
 function formatCurrency(amount, currency = 'EUR') {
@@ -201,6 +260,165 @@ function renderTable(containerId, columns, rows, emptyState = 'Keine Daten vorha
         });
         tbody.appendChild(tr);
     });
+    table.appendChild(tbody);
+    container.appendChild(table);
+}
+
+function renderReservationsTable(reservations) {
+    renderTable('reservations-list', [
+        { key: 'confirmation_number', label: 'Bestätigungsnr.' },
+        { key: 'guest', label: 'Gast', render: (row) => `${row.first_name || ''} ${row.last_name || ''}`.trim() },
+        { key: 'check_in_date', label: 'Check-in', render: (row) => formatDate(row.check_in_date) },
+        { key: 'check_out_date', label: 'Check-out', render: (row) => formatDate(row.check_out_date) },
+        { key: 'status', label: 'Status' },
+        { key: 'rooms', label: 'Zimmer', render: (row) => (row.rooms || []).map((room) => room.room_number).join(', ') },
+        { key: 'total_amount', label: 'Gesamt', render: (row) => formatCurrency(row.total_amount, row.currency || 'EUR') },
+    ], reservations);
+}
+
+function renderOccupancyCalendar(rooms, reservations, startDateStr, days = CALENDAR_DAYS) {
+    const container = document.getElementById('occupancy-calendar');
+    if (!container) {
+        return;
+    }
+
+    container.innerHTML = '';
+
+    if (!rooms || rooms.length === 0) {
+        const empty = document.createElement('p');
+        empty.className = 'muted';
+        empty.textContent = 'Bitte legen Sie Zimmer an, um die Belegung anzuzeigen.';
+        container.appendChild(empty);
+        return;
+    }
+
+    const startDate = parseISODate(startDateStr) || new Date();
+    const totalDays = Number.isFinite(days) && days > 0 ? Math.floor(days) : CALENDAR_DAYS;
+    const dayDates = [];
+    for (let index = 0; index < totalDays; index += 1) {
+        dayDates.push(addDays(startDate, index));
+    }
+    const dayKeys = dayDates.map((date) => dateKey(date));
+    const dayKeySet = new Set(dayKeys);
+    const rangeEndExclusive = addDays(startDate, totalDays);
+    const occupancyMap = new Map();
+    const reservationsList = Array.isArray(reservations) ? reservations : [];
+
+    reservationsList.forEach((reservation) => {
+        const status = normalizeStatusClass(reservation.status || '');
+        if (status === 'cancelled' || status === 'no_show') {
+            return;
+        }
+        const checkIn = parseISODate(reservation.check_in_date);
+        const checkOut = parseISODate(reservation.check_out_date);
+        if (!checkIn || !checkOut || checkOut <= checkIn) {
+            return;
+        }
+        const visibleStart = checkIn > startDate ? checkIn : startDate;
+        const visibleEnd = checkOut < rangeEndExclusive ? checkOut : rangeEndExclusive;
+        if (visibleEnd <= visibleStart) {
+            return;
+        }
+        (reservation.rooms || []).forEach((room) => {
+            const roomId = room.room_id ?? room.id;
+            if (!roomId) {
+                return;
+            }
+            for (let cursor = new Date(visibleStart); cursor < visibleEnd; cursor = addDays(cursor, 1)) {
+                const keyDate = dateKey(cursor);
+                if (!dayKeySet.has(keyDate)) {
+                    continue;
+                }
+                const key = `${roomId}_${keyDate}`;
+                occupancyMap.set(key, reservation);
+            }
+        });
+    });
+
+    const table = document.createElement('table');
+    table.className = 'calendar-table';
+    const thead = document.createElement('thead');
+    const headerRow = document.createElement('tr');
+    const roomHeader = document.createElement('th');
+    roomHeader.className = 'room';
+    roomHeader.textContent = 'Zimmer';
+    headerRow.appendChild(roomHeader);
+
+    const headerFormatter = new Intl.DateTimeFormat('de-DE', { weekday: 'short', day: '2-digit', month: '2-digit' });
+    const todayKey = toLocalISODate();
+
+    dayDates.forEach((date) => {
+        const th = document.createElement('th');
+        const key = dateKey(date);
+        th.textContent = headerFormatter.format(date);
+        th.dataset.date = key;
+        if (key === todayKey) {
+            th.classList.add('today');
+        }
+        if (isWeekend(date)) {
+            th.classList.add('weekend');
+        }
+        headerRow.appendChild(th);
+    });
+
+    thead.appendChild(headerRow);
+    table.appendChild(thead);
+
+    const tbody = document.createElement('tbody');
+    const sortedRooms = [...rooms].sort((a, b) => {
+        const aValue = (a.room_number ?? a.name ?? '').toString();
+        const bValue = (b.room_number ?? b.name ?? '').toString();
+        return aValue.localeCompare(bValue, 'de', { numeric: true, sensitivity: 'base' });
+    });
+
+    sortedRooms.forEach((room) => {
+        const row = document.createElement('tr');
+        const roomId = room.id ?? room.room_id;
+        if (!roomId) {
+            return;
+        }
+        const roomCell = document.createElement('th');
+        roomCell.scope = 'row';
+        roomCell.className = 'room';
+        roomCell.textContent = room.room_number || room.name || `Zimmer ${roomId}`;
+        row.appendChild(roomCell);
+
+        dayDates.forEach((date) => {
+            const key = `${roomId}_${dateKey(date)}`;
+            const cell = document.createElement('td');
+            cell.dataset.date = dateKey(date);
+            if (cell.dataset.date === todayKey) {
+                cell.classList.add('today');
+            }
+            if (isWeekend(date)) {
+                cell.classList.add('weekend');
+            }
+            const reservation = occupancyMap.get(key);
+            if (reservation) {
+                const statusClass = normalizeStatusClass(reservation.status || '');
+                cell.classList.add('occupied');
+                if (statusClass) {
+                    cell.classList.add(`status-${statusClass}`);
+                }
+                const guestName = `${reservation.first_name || ''} ${reservation.last_name || ''}`.trim();
+                cell.textContent = guestName || reservation.confirmation_number || 'Belegt';
+                const details = [
+                    guestName,
+                    reservation.confirmation_number ? `Bestätigungsnr.: ${reservation.confirmation_number}` : null,
+                    reservation.check_in_date ? `Anreise: ${formatDate(reservation.check_in_date)}` : null,
+                    reservation.check_out_date ? `Abreise: ${formatDate(reservation.check_out_date)}` : null,
+                ].filter(Boolean);
+                cell.title = details.join('\n');
+            } else {
+                cell.classList.add('vacant');
+                cell.textContent = 'Frei';
+            }
+            row.appendChild(cell);
+        });
+
+        tbody.appendChild(row);
+    });
+
     table.appendChild(tbody);
     container.appendChild(table);
 }
@@ -305,36 +523,73 @@ async function loadDashboard(force = false) {
         return;
     }
     try {
-        const targetDate = dashboardDateInput.value || new Date().toISOString().slice(0, 10);
-        const startOfMonth = new Date(targetDate);
-        startOfMonth.setDate(1);
-        const monthStart = startOfMonth.toISOString().slice(0, 10);
-        const endOfMonth = new Date(startOfMonth.getFullYear(), startOfMonth.getMonth() + 1, 0).toISOString().slice(0, 10);
-        const [occupancy, revenue, openTasks] = await Promise.all([
-            apiFetch(`reports/occupancy?start=${targetDate}&end=${targetDate}`),
-            apiFetch(`reports/revenue?start=${monthStart}&end=${endOfMonth}`),
+        const targetDateValue = dashboardDateInput.value || toLocalISODate();
+        const targetDate = parseISODate(targetDateValue) || new Date();
+        const monthStart = toLocalISODate(new Date(targetDate.getFullYear(), targetDate.getMonth(), 1));
+        const monthEnd = toLocalISODate(new Date(targetDate.getFullYear(), targetDate.getMonth() + 1, 0));
+        const calendarEnd = toLocalISODate(addDays(targetDate, CALENDAR_DAYS - 1));
+
+        const roomsPromise = state.rooms.length
+            ? Promise.resolve(state.rooms)
+            : apiFetch('rooms').then((rooms) => {
+                state.rooms = rooms;
+                populateRoomOptions();
+                return rooms;
+            });
+
+        const reservationsPromise = force || state.reservations.length === 0
+            ? apiFetch('reservations').then((reservations) => {
+                state.reservations = reservations;
+                return reservations;
+            })
+            : Promise.resolve(state.reservations);
+
+        const [occupancy, revenue, openTasks, rooms, reservations] = await Promise.all([
+            apiFetch(`reports/occupancy?start=${targetDateValue}&end=${calendarEnd}`),
+            apiFetch(`reports/revenue?start=${monthStart}&end=${monthEnd}`),
             apiFetch('housekeeping/tasks?status=open'),
+            roomsPromise,
+            reservationsPromise,
         ]);
-        const occupancyToday = occupancy[0] || null;
-        document.getElementById('dash-occupancy-rate').textContent = occupancyToday ? `${occupancyToday.occupancy_rate}%` : '-- %';
+
+        if (Array.isArray(rooms)) {
+            state.rooms = rooms;
+        }
+        state.reservations = Array.isArray(reservations) ? reservations : [];
+
+        if (state.loadedSections.has('reservations')) {
+            renderReservationsTable(state.reservations);
+        }
+
+        const occupancyToday = Array.isArray(occupancy)
+            ? occupancy.find((entry) => entry.date === targetDateValue) || null
+            : null;
+        document.getElementById('dash-occupancy-rate').textContent = occupancyToday ? `${occupancyToday.occupancy_rate}%` : '--%';
         document.getElementById('dash-occupancy-detail').textContent = occupancyToday
             ? `${occupancyToday.occupied_rooms} von ${occupancyToday.available_rooms} Zimmern belegt`
             : 'Keine Daten';
+
         const invoiceTotals = revenue?.invoices || { invoice_total: 0, tax_total: 0 };
         document.getElementById('dash-revenue-total').textContent = formatCurrency(invoiceTotals.invoice_total || 0);
         document.getElementById('dash-revenue-detail').textContent = `Steueranteil: ${formatCurrency(invoiceTotals.tax_total || 0)}`;
-        document.getElementById('dash-open-tasks').textContent = openTasks.length;
+
+        const openTaskCount = Array.isArray(openTasks) ? openTasks.length : 0;
+        document.getElementById('dash-open-tasks').textContent = openTaskCount;
+
         renderTable('occupancy-table', [
             { key: 'date', label: 'Datum', render: (row) => formatDate(row.date) },
             { key: 'occupied_rooms', label: 'Belegte Zimmer' },
             { key: 'available_rooms', label: 'Gesamtzimmer' },
             { key: 'occupancy_rate', label: 'Auslastung', render: (row) => `${row.occupancy_rate}%` },
-        ], occupancy);
+        ], Array.isArray(occupancy) ? occupancy : []);
+
+        renderOccupancyCalendar(rooms, reservations, targetDateValue, CALENDAR_DAYS);
         state.loadedSections.add('dashboard');
     } catch (error) {
         showMessage(error.message, 'error');
     }
 }
+
 
 async function loadReservations(force = false) {
     if (!requireToken()) {
@@ -345,15 +600,8 @@ async function loadReservations(force = false) {
     }
     try {
         const reservations = await apiFetch('reservations');
-        renderTable('reservations-list', [
-            { key: 'confirmation_number', label: 'Bestätigungsnr.' },
-            { key: 'guest', label: 'Gast', render: (row) => `${row.first_name || ''} ${row.last_name || ''}`.trim() },
-            { key: 'check_in_date', label: 'Check-in', render: (row) => formatDate(row.check_in_date) },
-            { key: 'check_out_date', label: 'Check-out', render: (row) => formatDate(row.check_out_date) },
-            { key: 'status', label: 'Status' },
-            { key: 'rooms', label: 'Zimmer', render: (row) => (row.rooms || []).map((room) => room.room_number).join(', ') },
-            { key: 'total_amount', label: 'Gesamt', render: (row) => formatCurrency(row.total_amount, row.currency || 'EUR') },
-        ], reservations);
+        state.reservations = reservations;
+        renderReservationsTable(reservations);
         state.loadedSections.add('reservations');
     } catch (error) {
         showMessage(error.message, 'error');
@@ -447,7 +695,7 @@ async function loadReports(force = false) {
         return;
     }
     try {
-        const start = reportStartInput.value || new Date().toISOString().slice(0, 10);
+        const start = reportStartInput.value || toLocalISODate();
         const end = reportEndInput.value || start;
         const [occupancy, revenue, forecast] = await Promise.all([
             apiFetch(`reports/occupancy?start=${start}&end=${end}`),
@@ -672,6 +920,7 @@ document.getElementById('reload-users').addEventListener('click', () => loadUser
 document.getElementById('reload-guests').addEventListener('click', () => loadGuests(true));
 document.getElementById('reload-integrations').addEventListener('click', () => loadIntegrations(true));
 document.getElementById('refresh-dashboard').addEventListener('click', () => loadDashboard(true));
+dashboardDateInput.addEventListener('change', () => loadDashboard(true));
 document.getElementById('refresh-reports').addEventListener('click', () => loadReports(true));
 
 document.getElementById('room-form').addEventListener('submit', async (event) => {
