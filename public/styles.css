@@ -266,6 +266,11 @@ section[data-section].active {
     border-color: rgba(249, 115, 22, 0.55);
 }
 
+.calendar-table td.occupied.status-paid {
+    background: #0ea5e9;
+    border-color: rgba(14, 165, 233, 0.55);
+}
+
 .calendar-table td.occupied.status-checked_out {
     background: #6b7280;
     border-color: rgba(107, 114, 128, 0.55);

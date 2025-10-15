@@ -59,6 +59,11 @@
                     <label for="dashboard-date">Datum</label>
                     <input type="date" id="dashboard-date">
                     <button type="button" id="refresh-dashboard" class="secondary">Aktualisieren</button>
+                    <label for="calendar-label-mode">Anzeige</label>
+                    <select id="calendar-label-mode">
+                        <option value="guest">Gastname</option>
+                        <option value="company">Firmenname</option>
+                    </select>
                 </div>
             </div>
             <div class="calendar-wrapper">
@@ -137,6 +142,10 @@
                             <option value="confirmed">Bestätigt</option>
                             <option value="tentative">Voranfrage</option>
                             <option value="checked_in">Eingecheckt</option>
+                            <option value="paid">Bezahlt</option>
+                            <option value="checked_out">Ausgecheckt</option>
+                            <option value="cancelled">Storniert</option>
+                            <option value="no_show">Nicht erschienen</option>
                         </select>
                     </label>
                     <label>Quelle

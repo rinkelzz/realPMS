@@ -71,6 +71,34 @@ try {
     respond('Error ensuring guest/company relation: ' . $exception->getMessage(), true, $results);
 }
 
+try {
+    $stmt = $pdo->query("SHOW COLUMNS FROM reservations LIKE 'status'");
+    $column = $stmt ? $stmt->fetch(PDO::FETCH_ASSOC) : false;
+    $type = $column['Type'] ?? '';
+    if (strpos($type, "'paid'") === false) {
+        $pdo->exec("ALTER TABLE reservations MODIFY status ENUM('tentative','confirmed','checked_in','paid','checked_out','cancelled','no_show') NOT NULL DEFAULT 'tentative'");
+        $results[] = '✓ Updated reservation status options';
+    } else {
+        $results[] = '• Reservation status options already current';
+    }
+} catch (PDOException $exception) {
+    respond('Error updating reservation status enum: ' . $exception->getMessage(), true, $results);
+}
+
+try {
+    $stmt = $pdo->query("SHOW COLUMNS FROM reservation_status_logs LIKE 'status'");
+    $column = $stmt ? $stmt->fetch(PDO::FETCH_ASSOC) : false;
+    $type = $column['Type'] ?? '';
+    if (strpos($type, "'paid'") === false) {
+        $pdo->exec("ALTER TABLE reservation_status_logs MODIFY status ENUM('tentative','confirmed','checked_in','paid','checked_out','cancelled','no_show') NOT NULL");
+        $results[] = '✓ Updated reservation status log options';
+    } else {
+        $results[] = '• Reservation status log options already current';
+    }
+} catch (PDOException $exception) {
+    respond('Error updating reservation status log enum: ' . $exception->getMessage(), true, $results);
+}
+
 respond('Installation completed successfully.', false, $results);
 
 /**
@@ -288,7 +316,7 @@ function getSchemaStatements(): array
                 id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
                 confirmation_number VARCHAR(100) NOT NULL UNIQUE,
                 guest_id BIGINT UNSIGNED NOT NULL,
-                status ENUM('tentative','confirmed','checked_in','checked_out','cancelled','no_show') NOT NULL DEFAULT 'tentative',
+                status ENUM('tentative','confirmed','checked_in','paid','checked_out','cancelled','no_show') NOT NULL DEFAULT 'tentative',
                 check_in_date DATE NOT NULL,
                 check_out_date DATE NOT NULL,
                 adults SMALLINT UNSIGNED NOT NULL DEFAULT 1,
@@ -393,7 +421,7 @@ function getSchemaStatements(): array
             CREATE TABLE IF NOT EXISTS reservation_status_logs (
                 id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
                 reservation_id BIGINT UNSIGNED NOT NULL,
-                status ENUM('tentative','confirmed','checked_in','checked_out','cancelled','no_show') NOT NULL,
+                status ENUM('tentative','confirmed','checked_in','paid','checked_out','cancelled','no_show') NOT NULL,
                 notes TEXT NULL,
                 recorded_by BIGINT UNSIGNED NULL,
                 recorded_at TIMESTAMP NULL DEFAULT CURRENT_TIMESTAMP,

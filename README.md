@@ -56,6 +56,7 @@ Neben der reinen API steht jetzt ein leichtgewichtiger Administrations-Client zu
   ```
   und rufe anschließend `http://localhost:8080/` im Browser auf. Die API muss parallel (z. B. über Apache/Nginx oder einen zweiten PHP-Built-in-Server) erreichbar sein.
 - Im Bereich „Firmen“ legst du Unternehmensprofile an und bearbeitest sie; Gäste können direkt im Gästebereich einer Firma zugeordnet oder dort editiert werden.
+- Die Dashboard-Kalenderansicht sortiert Zimmer nach Kategorie, markiert Angereist/Bezahlt/Abgereist farblich und lässt sich per Umschalter zwischen Gast- und Firmenname umstellen.
 
 ## REST API für den MVP-Funktionsumfang
 

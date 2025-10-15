@@ -13,13 +13,25 @@ const state = {
     editingGuestId: null,
     editingCompanyId: null,
     loadedSections: new Set(),
+    calendarLabelMode: 'guest',
 };
 
 const CALENDAR_DAYS = 14;
+const CALENDAR_LABEL_KEY = 'realpms_calendar_label_mode';
+
+try {
+    const storedMode = localStorage.getItem(CALENDAR_LABEL_KEY);
+    if (storedMode === 'company' || storedMode === 'guest') {
+        state.calendarLabelMode = storedMode;
+    }
+} catch (error) {
+    // ignore storage access issues
+}
 
 const notificationEl = document.getElementById('notification');
 const tokenInput = document.getElementById('api-token');
 const dashboardDateInput = document.getElementById('dashboard-date');
+const calendarLabelSelect = document.getElementById('calendar-label-mode');
 const reportStartInput = document.getElementById('report-start');
 const reportEndInput = document.getElementById('report-end');
 const reservationForm = document.getElementById('reservation-form');
@@ -47,6 +59,16 @@ const companySummary = companyDetails ? companyDetails.querySelector('summary') 
 const companySubmitButton = companyForm ? companyForm.querySelector('button[type="submit"]') : null;
 const companyCancelButton = document.getElementById('company-cancel-edit');
 const companySummaryDefault = companySummary ? companySummary.textContent : 'Firma anlegen';
+
+const RESERVATION_STATUS_LABELS = {
+    tentative: 'Voranfrage',
+    confirmed: 'Bestätigt',
+    checked_in: 'Angereist',
+    paid: 'Bezahlt',
+    checked_out: 'Abgereist',
+    cancelled: 'Storniert',
+    no_show: 'Nicht erschienen',
+};
 
 function showMessage(message, type = 'info', timeout = 4000) {
     if (!notificationEl) {
@@ -111,6 +133,26 @@ function normalizeStatusClass(value) {
         return '';
     }
     return value.toString().toLowerCase().replace(/[^a-z0-9_-]/g, '');
+}
+
+function formatReservationStatus(value) {
+    if (!value) {
+        return '';
+    }
+    const normalized = normalizeStatusClass(value);
+    return RESERVATION_STATUS_LABELS[normalized] || value;
+}
+
+function getReservationCalendarLabel(reservation, labelMode = 'guest') {
+    const guestName = `${reservation.first_name || ''} ${reservation.last_name || ''}`.trim();
+    const companyName = reservation.company_name || '';
+    if (labelMode === 'company') {
+        if (companyName) {
+            return companyName;
+        }
+        return guestName || reservation.confirmation_number || 'Belegt';
+    }
+    return guestName || companyName || reservation.confirmation_number || 'Belegt';
 }
 
 async function apiFetch(path, options = {}) {
@@ -535,7 +577,7 @@ function renderReservationsTable(reservations) {
         { key: 'guest', label: 'Gast', render: (row) => `${row.first_name || ''} ${row.last_name || ''}`.trim() },
         { key: 'check_in_date', label: 'Check-in', render: (row) => formatDate(row.check_in_date) },
         { key: 'check_out_date', label: 'Check-out', render: (row) => formatDate(row.check_out_date) },
-        { key: 'status', label: 'Status' },
+        { key: 'status', label: 'Status', render: (row) => formatReservationStatus(row.status) },
         { key: 'rooms', label: 'Zimmer', render: (row) => (row.rooms || []).map((room) => room.room_number).join(', ') },
         { key: 'total_amount', label: 'Gesamt', render: (row) => formatCurrency(row.total_amount, row.currency || 'EUR') },
         { key: 'actions', label: 'Aktionen', render: (row) => `<button type="button" class="secondary reservation-edit" data-id="${row.id}">Bearbeiten</button>` },
@@ -681,7 +723,7 @@ function startCompanyEdit(companyId) {
     }
 }
 
-function renderOccupancyCalendar(rooms, reservations, startDateStr, days = CALENDAR_DAYS) {
+function renderOccupancyCalendar(rooms, reservations, startDateStr, days = CALENDAR_DAYS, labelMode = state.calendarLabelMode || 'guest') {
     const container = document.getElementById('occupancy-calendar');
     if (!container) {
         return;
@@ -811,10 +853,14 @@ function renderOccupancyCalendar(rooms, reservations, startDateStr, days = CALEN
                     cell.classList.add(`status-${statusClass}`);
                 }
                 const guestName = `${reservation.first_name || ''} ${reservation.last_name || ''}`.trim();
-                cell.textContent = guestName || reservation.confirmation_number || 'Belegt';
+                const label = getReservationCalendarLabel(reservation, labelMode);
+                const statusLabel = formatReservationStatus(reservation.status);
+                cell.textContent = label;
                 const details = [
-                    guestName,
+                    label !== guestName && guestName ? `Gast: ${guestName}` : guestName,
+                    reservation.company_name ? `Firma: ${reservation.company_name}` : null,
                     reservation.confirmation_number ? `Bestätigungsnr.: ${reservation.confirmation_number}` : null,
+                    statusLabel ? `Status: ${statusLabel}` : null,
                     reservation.check_in_date ? `Anreise: ${formatDate(reservation.check_in_date)}` : null,
                     reservation.check_out_date ? `Abreise: ${formatDate(reservation.check_out_date)}` : null,
                 ].filter(Boolean);
@@ -1809,6 +1855,26 @@ if (reservationsList) {
             return;
         }
         startReservationEdit(reservationId);
+    });
+}
+
+if (calendarLabelSelect) {
+    calendarLabelSelect.value = state.calendarLabelMode;
+    calendarLabelSelect.addEventListener('change', () => {
+        const nextMode = calendarLabelSelect.value === 'company' ? 'company' : 'guest';
+        state.calendarLabelMode = nextMode;
+        try {
+            localStorage.setItem(CALENDAR_LABEL_KEY, nextMode);
+        } catch (error) {
+            // ignore storage failures
+        }
+        renderOccupancyCalendar(
+            state.rooms,
+            state.reservations,
+            dashboardDateInput && dashboardDateInput.value ? dashboardDateInput.value : toLocalISODate(),
+            CALENDAR_DAYS,
+            nextMode,
+        );
     });
 }
 

@@ -746,7 +746,7 @@ function handleReservationStatusChange(int $reservationId, string $status, ?arra
 
     logReservationStatus($pdo, $reservationId, $status, $notes, $recordedBy);
 
-    if ($status === 'checked_in') {
+    if ($status === 'checked_in' || $status === 'paid') {
         $pdo->prepare("UPDATE rooms SET status = 'occupied', updated_at = :updated_at WHERE id IN (SELECT room_id FROM reservation_rooms WHERE reservation_id = :id)")->execute([
             'updated_at' => now(),
             'id' => $reservationId,
@@ -1341,7 +1341,7 @@ function buildOccupancyReport(string $start, string $end): array
     $report = [];
     foreach ($period as $date) {
         $formatted = $date->format('Y-m-d');
-        $stmt = $pdo->prepare('SELECT COUNT(DISTINCT rr.room_id) FROM reservation_rooms rr JOIN reservations r ON rr.reservation_id = r.id WHERE r.status IN (\'confirmed\', \'checked_in\') AND :date >= r.check_in_date AND :date < r.check_out_date');
+        $stmt = $pdo->prepare('SELECT COUNT(DISTINCT rr.room_id) FROM reservation_rooms rr JOIN reservations r ON rr.reservation_id = r.id WHERE r.status IN (\'confirmed\', \'checked_in\', \'paid\') AND :date >= r.check_in_date AND :date < r.check_out_date');
         $stmt->execute(['date' => $formatted]);
         $occupied = (int) $stmt->fetchColumn();
         $report[] = [
@@ -1379,7 +1379,7 @@ function buildRevenueReport(string $start, string $end): array
 function buildForecastReport(string $start, string $end): array
 {
     $pdo = db();
-    $stmt = $pdo->prepare('SELECT r.check_in_date, r.check_out_date, COUNT(rr.room_id) as rooms, COALESCE(r.total_amount, 0) as total_amount FROM reservations r LEFT JOIN reservation_rooms rr ON rr.reservation_id = r.id WHERE r.status IN (\'tentative\', \'confirmed\') AND r.check_in_date BETWEEN :start AND :end GROUP BY r.id');
+    $stmt = $pdo->prepare('SELECT r.check_in_date, r.check_out_date, COUNT(rr.room_id) as rooms, COALESCE(r.total_amount, 0) as total_amount FROM reservations r LEFT JOIN reservation_rooms rr ON rr.reservation_id = r.id WHERE r.status IN (\'tentative\', \'confirmed\', \'paid\') AND r.check_in_date BETWEEN :start AND :end GROUP BY r.id');
     $stmt->execute(['start' => $start, 'end' => $end]);
     $rows = $stmt->fetchAll();
 
