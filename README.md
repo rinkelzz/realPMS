@@ -34,6 +34,13 @@ Für ein automatisiertes Update des aktuell ausgecheckten Branches steht `backen
    ```
    oder rufe per HTTP `https://dein-host/backend/update.php?token=mein-sicherer-token` auf.
 3. Das Skript führt `git pull` für den aktuellen Branch aus und gibt die Logausgabe als JSON zurück.
+4. Falls Git auf dem Webserver nicht verfügbar ist, lädt das Skript automatisch ein ZIP-Archiv von GitHub:
+   - Standardmäßig wird `https://github.com/rinkelzz/realpms` mit dem Branch `main` verwendet.
+   - Über Umgebungsvariablen kannst du die Quelle anpassen:
+     - `PMS_UPDATE_REPO_SLUG` (z. B. `meinkonto/meinrepo`)
+     - `PMS_UPDATE_BRANCH` (z. B. `production`)
+     - `PMS_UPDATE_ARCHIVE_URL` (kompletter Archiv-Link, überschreibt die beiden Werte oben).
+   - Stelle sicher, dass die PHP-Erweiterung `ZipArchive` aktiviert ist, damit das Archiv entpackt werden kann.
 
 > **Hinweis:** Stelle sicher, dass der Webserver-Benutzer die notwendigen Berechtigungen für das Git-Repository besitzt. Andernfalls schlägt das Update fehl.
 
