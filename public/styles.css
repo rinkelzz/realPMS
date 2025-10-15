@@ -20,6 +20,10 @@ body {
     flex-direction: column;
 }
 
+.hidden {
+    display: none !important;
+}
+
 .top-bar {
     background: var(--surface);
     border-bottom: 1px solid var(--border);
@@ -453,6 +457,11 @@ textarea {
 
 .muted {
     color: var(--muted);
+}
+
+.text-danger {
+    color: #b91c1c;
+    font-weight: 600;
 }
 
 .app-footer {

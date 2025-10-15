@@ -96,9 +96,15 @@
                     <label>Zimmer
                         <select name="rooms" multiple size="4"></select>
                     </label>
+                    <p id="reservation-capacity" class="muted"></p>
                 </fieldset>
                 <fieldset>
                     <legend>Gast</legend>
+                    <label>Gast auswählen
+                        <select name="guest_id">
+                            <option value="">Neuer Gast</option>
+                        </select>
+                    </label>
                     <label>Vorname
                         <input type="text" name="guest_first" required>
                     </label>
@@ -133,6 +139,7 @@
                 </fieldset>
                 <div class="form-actions">
                     <button type="submit">Reservierung speichern</button>
+                    <button type="button" id="reservation-cancel-edit" class="secondary hidden">Abbrechen</button>
                 </div>
             </form>
         </details>

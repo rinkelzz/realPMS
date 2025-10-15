@@ -6,6 +6,8 @@ const state = {
     rooms: [],
     reservations: [],
     roles: [],
+    guests: [],
+    editingReservationId: null,
     loadedSections: new Set(),
 };
 
@@ -16,6 +18,15 @@ const tokenInput = document.getElementById('api-token');
 const dashboardDateInput = document.getElementById('dashboard-date');
 const reportStartInput = document.getElementById('report-start');
 const reportEndInput = document.getElementById('report-end');
+const reservationForm = document.getElementById('reservation-form');
+const reservationDetails = reservationForm ? reservationForm.closest('details') : null;
+const reservationSummary = reservationDetails ? reservationDetails.querySelector('summary') : null;
+const reservationSubmitButton = reservationForm ? reservationForm.querySelector('button[type="submit"]') : null;
+const reservationCancelButton = document.getElementById('reservation-cancel-edit');
+const reservationsList = document.getElementById('reservations-list');
+const reservationCapacityEl = document.getElementById('reservation-capacity');
+const reservationRoomsSelect = reservationForm ? reservationForm.querySelector('select[name="rooms"]') : null;
+const guestSelect = reservationForm ? reservationForm.querySelector('select[name="guest_id"]') : null;
 
 function showMessage(message, type = 'info', timeout = 4000) {
     if (!notificationEl) {
@@ -127,6 +138,7 @@ function setToken(token) {
     } else {
         localStorage.removeItem('realpms_api_token');
         state.loadedSections.clear();
+        resetReservationForm();
         showMessage('API-Token entfernt. Bitte neuen Token speichern.', 'info');
     }
 }
@@ -264,6 +276,187 @@ function renderTable(containerId, columns, rows, emptyState = 'Keine Daten vorha
     container.appendChild(table);
 }
 
+function calculateRoomCapacity(roomIds) {
+    if (!Array.isArray(roomIds) || roomIds.length === 0) {
+        return 0;
+    }
+    return roomIds.reduce((total, roomId) => {
+        const room = state.rooms.find((entry) => Number(entry.id) === Number(roomId));
+        const capacity = room ? Number(room.max_occupancy ?? room.base_occupancy ?? 0) : 0;
+        return Number.isFinite(capacity) ? total + capacity : total;
+    }, 0);
+}
+
+function updateReservationCapacityHint() {
+    if (!reservationForm || !reservationCapacityEl) {
+        return;
+    }
+    const adults = Number(reservationForm.adults?.value || 0);
+    const children = Number(reservationForm.children?.value || 0);
+    const guestTotal = adults + children;
+    const roomIds = reservationRoomsSelect
+        ? Array.from(reservationRoomsSelect.selectedOptions).map((option) => Number(option.value))
+        : [];
+
+    if (!roomIds.length) {
+        reservationCapacityEl.textContent = 'Bitte mindestens ein Zimmer auswählen.';
+        reservationCapacityEl.classList.remove('text-danger');
+        return;
+    }
+
+    const capacity = calculateRoomCapacity(roomIds);
+    if (capacity <= 0) {
+        reservationCapacityEl.textContent = '';
+        reservationCapacityEl.classList.remove('text-danger');
+        return;
+    }
+
+    reservationCapacityEl.textContent = `Kapazität: ${guestTotal} von ${capacity} Gästen.`;
+    if (guestTotal > capacity) {
+        reservationCapacityEl.classList.add('text-danger');
+    } else {
+        reservationCapacityEl.classList.remove('text-danger');
+    }
+}
+
+function populateGuestSelect() {
+    if (!guestSelect) {
+        return;
+    }
+    const currentValue = guestSelect.value;
+    const options = ['<option value="">Neuer Gast</option>'];
+    const sortedGuests = [...state.guests].sort((a, b) => {
+        const lastCompare = (a.last_name || '').localeCompare(b.last_name || '', 'de', { sensitivity: 'base' });
+        if (lastCompare !== 0) {
+            return lastCompare;
+        }
+        return (a.first_name || '').localeCompare(b.first_name || '', 'de', { sensitivity: 'base' });
+    });
+    sortedGuests.forEach((guest) => {
+        options.push(`<option value="${guest.id}">${guest.last_name || ''}${guest.last_name && guest.first_name ? ', ' : ''}${guest.first_name || ''}</option>`);
+    });
+    guestSelect.innerHTML = options.join('');
+    if (currentValue && [...guestSelect.options].some((option) => option.value === currentValue)) {
+        guestSelect.value = currentValue;
+    } else {
+        guestSelect.value = '';
+    }
+}
+
+function applyGuestToForm(guest) {
+    if (!reservationForm) {
+        return;
+    }
+    reservationForm.guest_first.value = guest?.first_name || '';
+    reservationForm.guest_last.value = guest?.last_name || '';
+    reservationForm.guest_email.value = guest?.email || '';
+    reservationForm.guest_phone.value = guest?.phone || '';
+}
+
+function resetReservationForm() {
+    if (!reservationForm) {
+        return;
+    }
+    const wasOpen = reservationDetails ? reservationDetails.open : false;
+    reservationForm.reset();
+    state.editingReservationId = null;
+    if (reservationSummary) {
+        reservationSummary.textContent = 'Neue Reservierung anlegen';
+    }
+    if (reservationSubmitButton) {
+        reservationSubmitButton.textContent = 'Reservierung speichern';
+    }
+    if (reservationCancelButton) {
+        reservationCancelButton.classList.add('hidden');
+    }
+    populateRatePlanSelect();
+    populateRoomOptions();
+    populateGuestSelect();
+    applyGuestToForm(null);
+    if (reservationDetails) {
+        reservationDetails.open = wasOpen;
+    }
+    updateReservationCapacityHint();
+}
+
+function fillReservationForm(reservation) {
+    if (!reservationForm) {
+        return;
+    }
+    populateRatePlanSelect();
+    populateRoomOptions();
+    populateGuestSelect();
+
+    reservationForm.check_in.value = reservation.check_in_date ? reservation.check_in_date.slice(0, 10) : '';
+    reservationForm.check_out.value = reservation.check_out_date ? reservation.check_out_date.slice(0, 10) : '';
+    reservationForm.adults.value = reservation.adults ?? 1;
+    reservationForm.children.value = reservation.children ?? 0;
+    reservationForm.total_amount.value = reservation.total_amount ?? '';
+    reservationForm.currency.value = reservation.currency || 'EUR';
+    reservationForm.status.value = reservation.status || 'confirmed';
+    reservationForm.booked_via.value = reservation.booked_via || '';
+
+    const selectedRoomIds = new Set((reservation.rooms || []).map((room) => Number(room.room_id ?? room.id)));
+    if (reservationRoomsSelect) {
+        Array.from(reservationRoomsSelect.options).forEach((option) => {
+            option.selected = selectedRoomIds.has(Number(option.value));
+        });
+    }
+
+    const guestSnapshot = {
+        first_name: reservation.first_name || '',
+        last_name: reservation.last_name || '',
+        email: reservation.email || '',
+        phone: reservation.phone || '',
+    };
+
+    if (reservation.guest_id) {
+        const existing = state.guests.find((guest) => Number(guest.id) === Number(reservation.guest_id));
+        if (!existing) {
+            state.guests.push({ id: reservation.guest_id, ...guestSnapshot });
+            populateGuestSelect();
+        }
+        if (guestSelect) {
+            guestSelect.value = String(reservation.guest_id);
+        }
+    } else if (guestSelect) {
+        guestSelect.value = '';
+    }
+
+    applyGuestToForm(guestSnapshot);
+    updateReservationCapacityHint();
+}
+
+async function startReservationEdit(reservationId) {
+    if (!requireToken()) {
+        return;
+    }
+    try {
+        const reservation = await apiFetch(`reservations/${reservationId}`);
+        if (!reservation) {
+            showMessage('Reservierung konnte nicht geladen werden.', 'error');
+            return;
+        }
+        state.editingReservationId = reservation.id;
+        if (reservationSummary) {
+            const label = reservation.confirmation_number || `ID ${reservation.id}`;
+            reservationSummary.textContent = `Reservierung bearbeiten (${label})`;
+        }
+        if (reservationSubmitButton) {
+            reservationSubmitButton.textContent = 'Reservierung aktualisieren';
+        }
+        if (reservationCancelButton) {
+            reservationCancelButton.classList.remove('hidden');
+        }
+        if (reservationDetails) {
+            reservationDetails.open = true;
+        }
+        fillReservationForm(reservation);
+    } catch (error) {
+        showMessage(error.message, 'error');
+    }
+}
+
 function renderReservationsTable(reservations) {
     renderTable('reservations-list', [
         { key: 'confirmation_number', label: 'Bestätigungsnr.' },
@@ -273,6 +466,7 @@ function renderReservationsTable(reservations) {
         { key: 'status', label: 'Status' },
         { key: 'rooms', label: 'Zimmer', render: (row) => (row.rooms || []).map((room) => room.room_number).join(', ') },
         { key: 'total_amount', label: 'Gesamt', render: (row) => formatCurrency(row.total_amount, row.currency || 'EUR') },
+        { key: 'actions', label: 'Aktionen', render: (row) => `<button type="button" class="secondary reservation-edit" data-id="${row.id}">Bearbeiten</button>` },
     ], reservations);
 }
 
@@ -366,6 +560,10 @@ function renderOccupancyCalendar(rooms, reservations, startDateStr, days = CALEN
 
     const tbody = document.createElement('tbody');
     const sortedRooms = [...rooms].sort((a, b) => {
+        const typeCompare = (a.room_type_name || '').localeCompare(b.room_type_name || '', 'de', { sensitivity: 'base' });
+        if (typeCompare !== 0) {
+            return typeCompare;
+        }
         const aValue = (a.room_number ?? a.name ?? '').toString();
         const bValue = (b.room_number ?? b.name ?? '').toString();
         return aValue.localeCompare(bValue, 'de', { numeric: true, sensitivity: 'base' });
@@ -380,7 +578,8 @@ function renderOccupancyCalendar(rooms, reservations, startDateStr, days = CALEN
         const roomCell = document.createElement('th');
         roomCell.scope = 'row';
         roomCell.className = 'room';
-        roomCell.textContent = room.room_number || room.name || `Zimmer ${roomId}`;
+        const roomLabel = room.room_number || room.name || `Zimmer ${roomId}`;
+        roomCell.textContent = room.room_type_name ? `${roomLabel} (${room.room_type_name})` : roomLabel;
         row.appendChild(roomCell);
 
         dayDates.forEach((date) => {
@@ -428,22 +627,26 @@ async function bootstrap() {
         return;
     }
     try {
-        const [roomTypes, ratePlans, rooms, roles] = await Promise.all([
+        const [roomTypes, ratePlans, rooms, roles, guests] = await Promise.all([
             apiFetch('room-types'),
             apiFetch('rate-plans'),
             apiFetch('rooms'),
             apiFetch('roles'),
+            apiFetch('guests'),
         ]);
         state.roomTypes = roomTypes;
         state.ratePlans = ratePlans;
         state.rooms = rooms;
         state.roles = roles;
+        state.guests = guests;
         populateRoomTypeSelects();
         populateRatePlanSelect();
         populateRoomOptions();
         populateRoleCheckboxes();
         populateRoomTypeList();
         populateRatePlanList();
+        populateGuestSelect();
+        resetReservationForm();
         state.loadedSections.clear();
         await Promise.all([
             loadDashboard(true),
@@ -472,15 +675,24 @@ function populateRatePlanSelect() {
 }
 
 function populateRoomOptions() {
-    const reservationRoomSelect = document.querySelector('#reservation-form select[name="rooms"]');
     const taskRoomSelect = document.querySelector('#task-form select[name="room"]');
-    const options = state.rooms.map((room) => `<option value="${room.id}">${room.room_number} (${room.room_type_name})</option>`);
-    if (reservationRoomSelect) {
-        reservationRoomSelect.innerHTML = options.join('');
+    const options = state.rooms.map((room) => {
+        const capacity = Number(room.max_occupancy ?? room.base_occupancy ?? 0);
+        const capacityText = capacity > 0 ? ` • max. ${capacity}` : '';
+        const typeLabel = room.room_type_name || 'Kategorie';
+        return `<option value="${room.id}">${room.room_number} (${typeLabel}${capacityText})</option>`;
+    });
+    if (reservationRoomsSelect) {
+        const selectedValues = new Set(Array.from(reservationRoomsSelect.selectedOptions || []).map((option) => option.value));
+        reservationRoomsSelect.innerHTML = options.join('');
+        Array.from(reservationRoomsSelect.options).forEach((option) => {
+            option.selected = selectedValues.has(option.value);
+        });
     }
     if (taskRoomSelect) {
         taskRoomSelect.innerHTML = `<option value="">Kein Zimmer</option>${options.join('')}`;
     }
+    updateReservationCapacityHint();
 }
 
 function populateRoleCheckboxes() {
@@ -767,6 +979,8 @@ async function loadGuests(force = false) {
     }
     try {
         const guests = await apiFetch('guests');
+        state.guests = guests;
+        populateGuestSelect();
         renderTable('guests-list', [
             { key: 'first_name', label: 'Vorname' },
             { key: 'last_name', label: 'Nachname' },
@@ -868,48 +1082,110 @@ const sectionLoaders = {
 
 // Form submissions
 
-document.getElementById('reservation-form').addEventListener('submit', async (event) => {
-    event.preventDefault();
-    if (!requireToken()) {
-        return;
-    }
-    const form = event.target;
-    const rooms = Array.from(form.rooms.selectedOptions).map((option) => Number(option.value));
-    if (rooms.length === 0) {
-        showMessage('Bitte mindestens ein Zimmer auswählen.', 'error');
-        return;
-    }
-    const payload = {
-        check_in_date: form.check_in.value,
-        check_out_date: form.check_out.value,
-        adults: Number(form.adults.value || 1),
-        children: Number(form.children.value || 0),
-        rate_plan_id: form.rate_plan.value ? Number(form.rate_plan.value) : null,
-        rooms,
-        guest: {
-            first_name: form.guest_first.value,
-            last_name: form.guest_last.value,
-            email: form.guest_email.value || null,
-            phone: form.guest_phone.value || null,
-        },
-        total_amount: form.total_amount.value ? Number(form.total_amount.value) : null,
-        currency: form.currency.value || 'EUR',
-        status: form.status.value,
-        booked_via: form.booked_via.value || null,
-    };
-    try {
-        await apiFetch('reservations', {
-            method: 'POST',
-            body: JSON.stringify(payload),
-        });
-        form.reset();
-        populateRatePlanSelect();
-        showMessage('Reservierung wurde angelegt.', 'success');
-        loadReservations(true);
-    } catch (error) {
-        showMessage(error.message, 'error');
-    }
-});
+if (reservationForm) {
+    reservationForm.addEventListener('submit', async (event) => {
+        event.preventDefault();
+        if (!requireToken()) {
+            return;
+        }
+        const rooms = reservationRoomsSelect
+            ? Array.from(reservationRoomsSelect.selectedOptions).map((option) => Number(option.value))
+            : [];
+        if (rooms.length === 0) {
+            showMessage('Bitte mindestens ein Zimmer auswählen.', 'error');
+            return;
+        }
+
+        const adults = Number(reservationForm.adults.value || 0);
+        const children = Number(reservationForm.children.value || 0);
+        const totalGuests = adults + children;
+        if (totalGuests < 1) {
+            showMessage('Bitte mindestens einen Gast angeben.', 'error');
+            return;
+        }
+        const capacity = calculateRoomCapacity(rooms);
+        if (capacity > 0 && totalGuests > capacity) {
+            showMessage(`Die ausgewählten Zimmer bieten nur Platz für ${capacity} Gäste.`, 'error');
+            return;
+        }
+
+        const payload = {
+            check_in_date: reservationForm.check_in.value,
+            check_out_date: reservationForm.check_out.value,
+            adults,
+            children,
+            rate_plan_id: reservationForm.rate_plan.value ? Number(reservationForm.rate_plan.value) : null,
+            rooms,
+            total_amount: reservationForm.total_amount.value ? Number(reservationForm.total_amount.value) : null,
+            currency: reservationForm.currency.value || 'EUR',
+            status: reservationForm.status.value,
+            booked_via: reservationForm.booked_via.value || null,
+        };
+
+        const selectedGuestId = guestSelect && guestSelect.value ? Number(guestSelect.value) : null;
+        const guestPayload = {
+            first_name: reservationForm.guest_first.value,
+            last_name: reservationForm.guest_last.value,
+            email: reservationForm.guest_email.value || null,
+            phone: reservationForm.guest_phone.value || null,
+        };
+
+        const isEdit = Boolean(state.editingReservationId);
+
+        if (selectedGuestId) {
+            payload.guest_id = selectedGuestId;
+            if (isEdit) {
+                payload.guest = guestPayload;
+            }
+        } else {
+            payload.guest = guestPayload;
+        }
+
+        const endpoint = isEdit ? `reservations/${state.editingReservationId}` : 'reservations';
+        const method = isEdit ? 'PUT' : 'POST';
+
+        try {
+            await apiFetch(endpoint, {
+                method,
+                body: JSON.stringify(payload),
+            });
+            showMessage(isEdit ? 'Reservierung wurde aktualisiert.' : 'Reservierung wurde angelegt.', 'success');
+            await Promise.all([
+                loadReservations(true),
+                loadDashboard(true),
+            ]);
+            resetReservationForm();
+        } catch (error) {
+            showMessage(error.message, 'error');
+        }
+    });
+}
+
+if (reservationCancelButton) {
+    reservationCancelButton.addEventListener('click', () => {
+        resetReservationForm();
+    });
+}
+
+if (reservationRoomsSelect) {
+    reservationRoomsSelect.addEventListener('change', updateReservationCapacityHint);
+}
+
+if (reservationForm) {
+    reservationForm.adults.addEventListener('input', updateReservationCapacityHint);
+    reservationForm.children.addEventListener('input', updateReservationCapacityHint);
+}
+
+if (guestSelect) {
+    guestSelect.addEventListener('change', () => {
+        if (!guestSelect.value) {
+            applyGuestToForm(null);
+            return;
+        }
+        const guest = state.guests.find((entry) => Number(entry.id) === Number(guestSelect.value));
+        applyGuestToForm(guest || null);
+    });
+}
 
 document.getElementById('reload-reservations').addEventListener('click', () => loadReservations(true));
 document.getElementById('reload-rooms').addEventListener('click', () => loadRooms(true));
@@ -1179,7 +1455,7 @@ document.getElementById('guest-form').addEventListener('submit', async (event) =
         });
         form.reset();
         showMessage('Gast gespeichert.', 'success');
-        loadGuests(true);
+        await loadGuests(true);
     } catch (error) {
         showMessage(error.message, 'error');
     }
@@ -1195,6 +1471,20 @@ document.getElementById('guest-lookup').addEventListener('submit', async (event)
     }
     await lookupGuestReservation(confirmation);
 });
+
+if (reservationsList) {
+    reservationsList.addEventListener('click', (event) => {
+        const button = event.target.closest('.reservation-edit');
+        if (!button) {
+            return;
+        }
+        const reservationId = Number(button.dataset.id);
+        if (!Number.isFinite(reservationId)) {
+            return;
+        }
+        startReservationEdit(reservationId);
+    });
+}
 
 const storedToken = localStorage.getItem('realpms_api_token');
 if (storedToken) {

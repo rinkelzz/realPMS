@@ -241,7 +241,7 @@ function handleRooms(string $method, array $segments): void
 
     if ($method === 'GET') {
         if ($id !== null) {
-            $stmt = $pdo->prepare('SELECT rooms.*, room_types.name AS room_type_name FROM rooms JOIN room_types ON rooms.room_type_id = room_types.id WHERE rooms.id = :id');
+            $stmt = $pdo->prepare('SELECT rooms.*, room_types.name AS room_type_name, room_types.base_occupancy, room_types.max_occupancy FROM rooms JOIN room_types ON rooms.room_type_id = room_types.id WHERE rooms.id = :id');
             $stmt->execute(['id' => $id]);
             $room = $stmt->fetch();
             if (!$room) {
@@ -250,7 +250,7 @@ function handleRooms(string $method, array $segments): void
             jsonResponse($room);
         }
 
-        $query = 'SELECT rooms.*, room_types.name AS room_type_name FROM rooms JOIN room_types ON rooms.room_type_id = room_types.id';
+        $query = 'SELECT rooms.*, room_types.name AS room_type_name, room_types.base_occupancy, room_types.max_occupancy FROM rooms JOIN room_types ON rooms.room_type_id = room_types.id';
         $conditions = [];
         $params = [];
         if (isset($_GET['status'])) {
@@ -451,11 +451,18 @@ function handleReservations(string $method, array $segments): void
         $data = parseJsonBody();
         validateReservationPayload($data);
 
+        $guestCount = calculateGuestCount($data['adults'] ?? 1, $data['children'] ?? 0);
+
         $pdo->beginTransaction();
         try {
             $guestId = $data['guest_id'] ?? null;
             if ($guestId === null) {
                 $guestId = createGuest($pdo, $data['guest']);
+            } else {
+                $guestId = (int) $guestId;
+                if ($guestId <= 0) {
+                    jsonResponse(['error' => 'guest_id must reference an existing guest.'], 422);
+                }
             }
 
             $confirmation = $data['confirmation_number'] ?? generateConfirmationNumber();
@@ -478,33 +485,83 @@ function handleReservations(string $method, array $segments): void
             ]);
 
             $reservationId = (int) $pdo->lastInsertId();
-            assignRoomsToReservation($pdo, $reservationId, $data['rooms'] ?? [], $data['check_in_date'], $data['check_out_date']);
+            assignRoomsToReservation(
+                $pdo,
+                $reservationId,
+                $data['rooms'] ?? [],
+                $data['check_in_date'],
+                $data['check_out_date'],
+                $guestCount
+            );
             logReservationStatus($pdo, $reservationId, $data['status'] ?? 'tentative', $data['status_notes'] ?? null, $data['recorded_by'] ?? null);
 
             $pdo->commit();
             jsonResponse(['id' => $reservationId, 'confirmation_number' => $confirmation], 201);
         } catch (Throwable $exception) {
             $pdo->rollBack();
-            jsonResponse(['error' => $exception->getMessage()], 500);
+            $status = ($exception instanceof InvalidArgumentException || $exception instanceof RuntimeException) ? 422 : 500;
+            jsonResponse(['error' => $exception->getMessage()], $status);
         }
     }
 
     if (($method === 'PUT' || $method === 'PATCH') && $id !== null) {
         $data = parseJsonBody();
-        $fields = ['status', 'check_in_date', 'check_out_date', 'adults', 'children', 'rate_plan_id', 'total_amount', 'currency', 'booked_via', 'notes'];
+        $fields = ['status', 'check_in_date', 'check_out_date', 'adults', 'children', 'rate_plan_id', 'total_amount', 'currency', 'booked_via', 'notes', 'guest_id'];
         $updates = [];
         $params = ['id' => $id];
+        $stmt = $pdo->prepare('SELECT guest_id, adults, children, check_in_date, check_out_date FROM reservations WHERE id = :id');
+        $stmt->execute(['id' => $id]);
+        $currentReservation = $stmt->fetch();
+        if (!$currentReservation) {
+            jsonResponse(['error' => 'Reservation not found.'], 404);
+        }
+
+        $targetAdults = array_key_exists('adults', $data) ? (int) $data['adults'] : (int) $currentReservation['adults'];
+        $targetChildren = array_key_exists('children', $data) ? (int) $data['children'] : (int) $currentReservation['children'];
+        $targetCheckIn = array_key_exists('check_in_date', $data) ? $data['check_in_date'] : $currentReservation['check_in_date'];
+        $targetCheckOut = array_key_exists('check_out_date', $data) ? $data['check_out_date'] : $currentReservation['check_out_date'];
+        $targetGuestId = array_key_exists('guest_id', $data) ? (int) $data['guest_id'] : (int) $currentReservation['guest_id'];
+
+        if ($targetGuestId <= 0) {
+            jsonResponse(['error' => 'guest_id must reference an existing guest.'], 422);
+        }
+
+        $guestCount = calculateGuestCount($targetAdults, $targetChildren);
+        if ($guestCount < 1) {
+            jsonResponse(['error' => 'At least one guest is required for a reservation.'], 422);
+        }
+
+        $roomSelection = !empty($data['rooms']) ? $data['rooms'] : fetchReservationRooms((int) $id);
+        $roomIds = extractRoomIdsFromSelection($roomSelection);
+        ensureRoomCapacity($pdo, $roomIds, $guestCount);
+
+        if (empty($data['rooms']) && (array_key_exists('check_in_date', $data) || array_key_exists('check_out_date', $data))) {
+            foreach ($roomIds as $roomId) {
+                if (!isRoomAvailable($pdo, $roomId, $targetCheckIn, $targetCheckOut, (int) $id)) {
+                    jsonResponse(['error' => sprintf('Room %d is not available for the updated stay dates.', $roomId)], 422);
+                }
+            }
+        }
+
         foreach ($fields as $field) {
             if (array_key_exists($field, $data)) {
                 if (($field === 'check_in_date' || $field === 'check_out_date') && !validateDate($data[$field])) {
                     jsonResponse(['error' => sprintf('Invalid date for %s', $field)], 422);
                 }
+                if ($field === 'guest_id') {
+                    $guestValue = (int) $data[$field];
+                    if ($guestValue <= 0) {
+                        jsonResponse(['error' => 'guest_id must reference an existing guest.'], 422);
+                    }
+                    $params[$field] = $guestValue;
+                } else {
+                    $params[$field] = $data[$field];
+                }
                 $updates[] = sprintf('%s = :%s', $field, $field);
-                $params[$field] = $data[$field];
             }
         }
 
-        if (!$updates && empty($data['rooms'])) {
+        if (!$updates && empty($data['rooms']) && empty($data['guest'])) {
             jsonResponse(['error' => 'No changes supplied.'], 422);
         }
 
@@ -520,21 +577,43 @@ function handleReservations(string $method, array $segments): void
                 }
             }
 
+            if (isset($data['guest']) && is_array($data['guest'])) {
+                $guestFields = ['first_name', 'last_name', 'email', 'phone', 'address', 'city', 'country', 'notes'];
+                $guestUpdates = [];
+                $guestParams = ['id' => $targetGuestId];
+                foreach ($guestFields as $field) {
+                    if (array_key_exists($field, $data['guest'])) {
+                        $guestUpdates[] = sprintf('%s = :%s', $field, $field);
+                        $guestParams[$field] = $data['guest'][$field];
+                    }
+                }
+                if ($guestUpdates) {
+                    $guestUpdates[] = 'updated_at = :updated_at';
+                    $guestParams['updated_at'] = now();
+                    $guestSql = sprintf('UPDATE guests SET %s WHERE id = :id', implode(', ', $guestUpdates));
+                    $pdo->prepare($guestSql)->execute($guestParams);
+                }
+            }
+
             if (!empty($data['rooms'])) {
                 $pdo->prepare('DELETE FROM reservation_rooms WHERE reservation_id = :id')->execute(['id' => $id]);
-                $stmt = $pdo->prepare('SELECT check_in_date, check_out_date FROM reservations WHERE id = :id');
-                $stmt->execute(['id' => $id]);
-                $dates = $stmt->fetch();
-                $checkIn = $data['check_in_date'] ?? $dates['check_in_date'];
-                $checkOut = $data['check_out_date'] ?? $dates['check_out_date'];
-                assignRoomsToReservation($pdo, (int) $id, $data['rooms'], $checkIn, $checkOut);
+                assignRoomsToReservation(
+                    $pdo,
+                    (int) $id,
+                    $data['rooms'],
+                    $targetCheckIn,
+                    $targetCheckOut,
+                    $guestCount,
+                    (int) $id
+                );
             }
 
             $pdo->commit();
             jsonResponse(['updated' => true]);
         } catch (Throwable $exception) {
             $pdo->rollBack();
-            jsonResponse(['error' => $exception->getMessage()], 500);
+            $status = ($exception instanceof InvalidArgumentException || $exception instanceof RuntimeException) ? 422 : 500;
+            jsonResponse(['error' => $exception->getMessage()], $status);
         }
     }
 
@@ -617,8 +696,109 @@ function validateReservationPayload(array $data): void
         }
     }
 
-    if (!empty($data['rooms']) && !is_array($data['rooms'])) {
-        jsonResponse(['error' => 'rooms must be an array of room assignments.'], 422);
+    if (empty($data['rooms']) || !is_array($data['rooms'])) {
+        jsonResponse(['error' => 'rooms must be a non-empty array of room assignments.'], 422);
+    }
+
+    $guestCount = calculateGuestCount($data['adults'] ?? 1, $data['children'] ?? 0);
+    if ($guestCount < 1) {
+        jsonResponse(['error' => 'At least one guest is required for a reservation.'], 422);
+    }
+}
+
+function calculateGuestCount($adults, $children): int
+{
+    $adultCount = max(0, (int) $adults);
+    $childCount = max(0, (int) $children);
+
+    return $adultCount + $childCount;
+}
+
+function normalizeRoomAssignments(array $rooms): array
+{
+    $assignments = [];
+    foreach ($rooms as $room) {
+        if (is_array($room)) {
+            $roomId = (int) ($room['room_id'] ?? 0);
+            $nightlyRate = $room['nightly_rate'] ?? null;
+            $currency = $room['currency'] ?? null;
+        } else {
+            $roomId = (int) $room;
+            $nightlyRate = null;
+            $currency = null;
+        }
+
+        if ($roomId === 0) {
+            throw new InvalidArgumentException('room_id is required for each room assignment.');
+        }
+
+        $assignments[] = [
+            'room_id' => $roomId,
+            'nightly_rate' => $nightlyRate,
+            'currency' => $currency,
+        ];
+    }
+
+    return $assignments;
+}
+
+function extractRoomIdsFromSelection(array $rooms): array
+{
+    return array_column(normalizeRoomAssignments($rooms), 'room_id');
+}
+
+function ensureRoomCapacity(PDO $pdo, array $roomIds, int $guestCount): void
+{
+    $uniqueRoomIds = array_values(array_unique(array_map('intval', $roomIds)));
+    if (empty($uniqueRoomIds)) {
+        throw new InvalidArgumentException('At least one room must be selected.');
+    }
+    if ($guestCount < 1) {
+        throw new InvalidArgumentException('At least one guest is required for a reservation.');
+    }
+
+    $placeholders = implode(', ', array_fill(0, count($uniqueRoomIds), '?'));
+    $sql = <<<SQL
+        SELECT rooms.id, rooms.room_number, room_types.name AS room_type_name, room_types.max_occupancy
+        FROM rooms
+        JOIN room_types ON room_types.id = rooms.room_type_id
+        WHERE rooms.id IN ($placeholders)
+    SQL;
+    $stmt = $pdo->prepare($sql);
+    $stmt->execute($uniqueRoomIds);
+    $records = $stmt->fetchAll();
+
+    if (count($records) !== count($uniqueRoomIds)) {
+        throw new RuntimeException('One or more selected rooms could not be found.');
+    }
+
+    $totalCapacity = 0;
+    foreach ($records as $record) {
+        $capacity = (int) ($record['max_occupancy'] ?? 0);
+        if ($capacity <= 0) {
+            $roomLabel = $record['room_number'] ?? ('#' . $record['id']);
+            $typeLabel = $record['room_type_name'] ?? '';
+            throw new RuntimeException(sprintf('Room %s%s has no defined capacity.', $roomLabel, $typeLabel ? ' (' . $typeLabel . ')' : ''));
+        }
+        $totalCapacity += $capacity;
+    }
+
+    if ($guestCount > $totalCapacity) {
+        $labels = array_map(
+            static function ($record): string {
+                $roomLabel = $record['room_number'] ?? ('#' . $record['id']);
+                return $record['room_type_name']
+                    ? sprintf('%s (%s)', $roomLabel, $record['room_type_name'])
+                    : $roomLabel;
+            },
+            $records
+        );
+        throw new RuntimeException(sprintf(
+            'Selected rooms (%s) can accommodate up to %d guests, but %d were provided.',
+            implode(', ', $labels),
+            $totalCapacity,
+            $guestCount
+        ));
     }
 }
 
@@ -641,27 +821,25 @@ function createGuest(PDO $pdo, array $guest): int
     return (int) $pdo->lastInsertId();
 }
 
-function assignRoomsToReservation(PDO $pdo, int $reservationId, array $rooms, string $checkIn, string $checkOut): void
+function assignRoomsToReservation(PDO $pdo, int $reservationId, array $rooms, string $checkIn, string $checkOut, int $guestCount, ?int $ignoreReservationId = null): void
 {
-    foreach ($rooms as $room) {
-        $roomId = is_array($room) ? (int) ($room['room_id'] ?? 0) : (int) $room;
-        if ($roomId === 0) {
-            throw new InvalidArgumentException('room_id is required for each room assignment.');
-        }
+    $assignments = normalizeRoomAssignments($rooms);
+    $roomIds = array_column($assignments, 'room_id');
 
-        if (!isRoomAvailable($pdo, $roomId, $checkIn, $checkOut, $reservationId)) {
+    ensureRoomCapacity($pdo, $roomIds, $guestCount);
+
+    foreach ($assignments as $assignment) {
+        $roomId = $assignment['room_id'];
+        if (!isRoomAvailable($pdo, $roomId, $checkIn, $checkOut, $ignoreReservationId ?? $reservationId)) {
             throw new RuntimeException(sprintf('Room %d is not available for the selected dates.', $roomId));
         }
-
-        $nightlyRate = is_array($room) ? ($room['nightly_rate'] ?? null) : null;
-        $currency = is_array($room) ? ($room['currency'] ?? null) : null;
 
         $stmt = $pdo->prepare('INSERT INTO reservation_rooms (reservation_id, room_id, nightly_rate, currency) VALUES (:reservation_id, :room_id, :nightly_rate, :currency)');
         $stmt->execute([
             'reservation_id' => $reservationId,
             'room_id' => $roomId,
-            'nightly_rate' => $nightlyRate,
-            'currency' => $currency,
+            'nightly_rate' => $assignment['nightly_rate'],
+            'currency' => $assignment['currency'],
         ]);
     }
 }
