@@ -4,6 +4,36 @@ declare(strict_types=1);
 
 require __DIR__ . '/../bootstrap.php';
 
+const RESERVATION_STATUSES = [
+    'tentative',
+    'confirmed',
+    'checked_in',
+    'paid',
+    'checked_out',
+    'cancelled',
+    'no_show',
+];
+
+const CALENDAR_COLOR_STATUSES = [
+    'tentative',
+    'confirmed',
+    'checked_in',
+    'paid',
+    'checked_out',
+    'cancelled',
+    'no_show',
+];
+
+const DEFAULT_CALENDAR_COLORS = [
+    'tentative' => '#f97316',
+    'confirmed' => '#2563eb',
+    'checked_in' => '#16a34a',
+    'paid' => '#0ea5e9',
+    'checked_out' => '#6b7280',
+    'cancelled' => '#ef4444',
+    'no_show' => '#7c3aed',
+];
+
 $method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
 $uri = $_SERVER['REQUEST_URI'] ?? '/';
 $pathInfo = $_SERVER['PATH_INFO'] ?? '';
@@ -32,19 +62,20 @@ if ($resource === '') {
         'resources' => [
             'room-types',
             'rate-plans',
-        'rooms',
-        'reservations',
-        'guests',
-        'companies',
-        'housekeeping/tasks',
-        'invoices',
-        'payments',
-        'reports',
-        'users',
+            'rooms',
+            'reservations',
+            'guests',
+            'companies',
+            'housekeeping/tasks',
+            'invoices',
+            'payments',
+            'reports',
+            'users',
             'roles',
             'permissions',
             'integrations',
             'guest-portal',
+            'settings',
         ],
     ]);
 }
@@ -99,6 +130,9 @@ switch ($resource) {
         break;
     case 'guest-portal':
         handleGuestPortal($method, $segments);
+        break;
+    case 'settings':
+        handleSettings($method, $segments);
         break;
     default:
         jsonResponse(['error' => 'Resource not found.'], 404);
@@ -555,11 +589,15 @@ function handleReservations(string $method, array $segments): void
             }
 
             $confirmation = $data['confirmation_number'] ?? generateConfirmationNumber();
+            $statusValue = isset($data['status']) ? normalizeReservationStatus((string) $data['status']) : 'tentative';
+            if ($statusValue === null) {
+                jsonResponse(['error' => 'Unsupported reservation status.'], 422);
+            }
             $stmt = $pdo->prepare('INSERT INTO reservations (confirmation_number, guest_id, status, check_in_date, check_out_date, adults, children, rate_plan_id, total_amount, currency, booked_via, notes, created_at, updated_at) VALUES (:confirmation_number, :guest_id, :status, :check_in_date, :check_out_date, :adults, :children, :rate_plan_id, :total_amount, :currency, :booked_via, :notes, :created_at, :updated_at)');
             $stmt->execute([
                 'confirmation_number' => $confirmation,
                 'guest_id' => $guestId,
-                'status' => $data['status'] ?? 'tentative',
+                'status' => $statusValue,
                 'check_in_date' => $data['check_in_date'],
                 'check_out_date' => $data['check_out_date'],
                 'adults' => $data['adults'] ?? 1,
@@ -582,7 +620,8 @@ function handleReservations(string $method, array $segments): void
                 $data['check_out_date'],
                 $guestCount
             );
-            logReservationStatus($pdo, $reservationId, $data['status'] ?? 'tentative', $data['status_notes'] ?? null, $data['recorded_by'] ?? null);
+            logReservationStatus($pdo, $reservationId, $statusValue, $data['status_notes'] ?? null, $data['recorded_by'] ?? null);
+            updateRoomsForReservationStatus($pdo, $reservationId, $statusValue, $data['status_notes'] ?? null, $data['recorded_by'] ?? null);
 
             $pdo->commit();
             jsonResponse(['id' => $reservationId, 'confirmation_number' => $confirmation], 201);
@@ -643,6 +682,12 @@ function handleReservations(string $method, array $segments): void
                         jsonResponse(['error' => 'guest_id must reference an existing guest.'], 422);
                     }
                     $params[$field] = $guestValue;
+                } elseif ($field === 'status') {
+                    $normalizedStatus = normalizeReservationStatus((string) $data[$field]);
+                    if ($normalizedStatus === null) {
+                        jsonResponse(['error' => 'Unsupported reservation status.'], 422);
+                    }
+                    $params[$field] = $normalizedStatus;
                 } else {
                     $params[$field] = $data[$field];
                 }
@@ -661,8 +706,10 @@ function handleReservations(string $method, array $segments): void
                 $params['updated_at'] = now();
                 $stmt = $pdo->prepare(sprintf('UPDATE reservations SET %s WHERE id = :id', implode(', ', $updates)));
                 $stmt->execute($params);
-                if (isset($data['status'])) {
-                    logReservationStatus($pdo, (int) $id, $data['status'], $data['status_notes'] ?? null, $data['recorded_by'] ?? null);
+                if (isset($params['status'])) {
+                    $normalizedStatus = $params['status'];
+                    logReservationStatus($pdo, (int) $id, $normalizedStatus, $data['status_notes'] ?? null, $data['recorded_by'] ?? null);
+                    updateRoomsForReservationStatus($pdo, (int) $id, $normalizedStatus, $data['status_notes'] ?? null, $data['recorded_by'] ?? null);
                 }
             }
 
@@ -712,12 +759,25 @@ function handleReservations(string $method, array $segments): void
 
     if ($method === 'POST' && $id !== null && isset($segments[2])) {
         $action = $segments[2];
-        if ($action === 'check-in') {
+        if ($action === 'status') {
+            $data = parseJsonBody();
+            $targetStatus = $data['status'] ?? null;
+            if (!is_string($targetStatus)) {
+                jsonResponse(['error' => 'status is required.'], 422);
+            }
+            handleReservationStatusChange((int) $id, $targetStatus, $data);
+        } elseif ($action === 'check-in') {
             $data = parseJsonBody();
             handleReservationStatusChange((int) $id, 'checked_in', $data);
         } elseif ($action === 'check-out') {
             $data = parseJsonBody();
             handleReservationStatusChange((int) $id, 'checked_out', $data);
+        } elseif ($action === 'pay') {
+            $data = parseJsonBody();
+            handleReservationStatusChange((int) $id, 'paid', $data);
+        } elseif ($action === 'no-show') {
+            $data = parseJsonBody();
+            handleReservationStatusChange((int) $id, 'no_show', $data);
         } elseif ($action === 'documents') {
             $data = parseJsonBody();
             addReservationDocument((int) $id, $data);
@@ -732,41 +792,41 @@ function handleReservations(string $method, array $segments): void
 
 function handleReservationStatusChange(int $reservationId, string $status, ?array $payload = null): void
 {
+    $normalizedStatus = normalizeReservationStatus($status);
+    if ($normalizedStatus === null) {
+        jsonResponse(['error' => 'Unsupported reservation status.'], 422);
+    }
+
     $pdo = db();
+    $exists = $pdo->prepare('SELECT id FROM reservations WHERE id = :id');
+    $exists->execute(['id' => $reservationId]);
+    if ($exists->fetchColumn() === false) {
+        jsonResponse(['error' => 'Reservation not found.'], 404);
+    }
+
     $data = $payload ?? parseJsonBody();
     $notes = $data['notes'] ?? null;
     $recordedBy = $data['recorded_by'] ?? null;
 
-    $stmt = $pdo->prepare('UPDATE reservations SET status = :status, updated_at = :updated_at WHERE id = :id');
-    $stmt->execute([
-        'status' => $status,
-        'updated_at' => now(),
-        'id' => $reservationId,
-    ]);
-
-    logReservationStatus($pdo, $reservationId, $status, $notes, $recordedBy);
-
-    if ($status === 'checked_in' || $status === 'paid') {
-        $pdo->prepare("UPDATE rooms SET status = 'occupied', updated_at = :updated_at WHERE id IN (SELECT room_id FROM reservation_rooms WHERE reservation_id = :id)")->execute([
+    $pdo->beginTransaction();
+    try {
+        $stmt = $pdo->prepare('UPDATE reservations SET status = :status, updated_at = :updated_at WHERE id = :id');
+        $stmt->execute([
+            'status' => $normalizedStatus,
             'updated_at' => now(),
             'id' => $reservationId,
         ]);
-        foreach (getReservationRoomIds($pdo, $reservationId) as $roomId) {
-            logHousekeepingStatus($roomId, 'occupied', $notes, $recordedBy);
-        }
+
+        logReservationStatus($pdo, $reservationId, $normalizedStatus, $notes, $recordedBy);
+        updateRoomsForReservationStatus($pdo, $reservationId, $normalizedStatus, $notes, $recordedBy);
+
+        $pdo->commit();
+    } catch (Throwable $exception) {
+        $pdo->rollBack();
+        jsonResponse(['error' => 'Unable to update reservation status.', 'details' => $exception->getMessage()], 500);
     }
 
-    if ($status === 'checked_out') {
-        $pdo->prepare("UPDATE rooms SET status = 'in_cleaning', updated_at = :updated_at WHERE id IN (SELECT room_id FROM reservation_rooms WHERE reservation_id = :id)")->execute([
-            'updated_at' => now(),
-            'id' => $reservationId,
-        ]);
-        foreach (getReservationRoomIds($pdo, $reservationId) as $roomId) {
-            logHousekeepingStatus($roomId, 'in_cleaning', $notes, $recordedBy);
-        }
-    }
-
-    jsonResponse(['status' => $status]);
+    jsonResponse(['status' => $normalizedStatus]);
 }
 
 function validateReservationPayload(array $data): void
@@ -796,6 +856,10 @@ function validateReservationPayload(array $data): void
     $guestCount = calculateGuestCount($data['adults'] ?? 1, $data['children'] ?? 0);
     if ($guestCount < 1) {
         jsonResponse(['error' => 'At least one guest is required for a reservation.'], 422);
+    }
+
+    if (isset($data['status']) && normalizeReservationStatus((string) $data['status']) === null) {
+        jsonResponse(['error' => 'Unsupported reservation status.'], 422);
     }
 }
 
@@ -1146,6 +1210,107 @@ function getReservationRoomIds(PDO $pdo, int $reservationId): array
     $stmt = $pdo->prepare('SELECT room_id FROM reservation_rooms WHERE reservation_id = :reservation_id');
     $stmt->execute(['reservation_id' => $reservationId]);
     return array_map('intval', array_column($stmt->fetchAll(), 'room_id'));
+}
+
+function normalizeReservationStatus(string $status): ?string
+{
+    $normalized = strtolower(trim($status));
+    return in_array($normalized, RESERVATION_STATUSES, true) ? $normalized : null;
+}
+
+function updateRoomsForReservationStatus(PDO $pdo, int $reservationId, string $status, ?string $notes, $recordedBy): void
+{
+    $roomIds = getReservationRoomIds($pdo, $reservationId);
+    if (!$roomIds) {
+        return;
+    }
+
+    $roomStatus = null;
+    $housekeepingStatus = null;
+
+    if (in_array($status, ['checked_in', 'paid'], true)) {
+        $roomStatus = 'occupied';
+        $housekeepingStatus = 'occupied';
+    } elseif ($status === 'checked_out') {
+        $roomStatus = 'in_cleaning';
+        $housekeepingStatus = 'in_cleaning';
+    } elseif (in_array($status, ['cancelled', 'no_show'], true)) {
+        $roomStatus = 'available';
+        $housekeepingStatus = 'available';
+    }
+
+    if ($roomStatus !== null) {
+        $updateStmt = $pdo->prepare('UPDATE rooms SET status = :status, updated_at = :updated_at WHERE id = :id');
+        foreach ($roomIds as $roomId) {
+            $updateStmt->execute([
+                'status' => $roomStatus,
+                'updated_at' => now(),
+                'id' => $roomId,
+            ]);
+        }
+    }
+
+    if ($housekeepingStatus !== null) {
+        foreach ($roomIds as $roomId) {
+            logHousekeepingStatus($roomId, $housekeepingStatus, $notes, $recordedBy);
+        }
+    }
+}
+
+function getCalendarColorSettings(PDO $pdo): array
+{
+    $stmt = $pdo->prepare("SELECT `key`, `value` FROM settings WHERE `key` LIKE 'calendar_color_%'");
+    $stmt->execute();
+    $overrides = [];
+    foreach ($stmt->fetchAll() as $row) {
+        $status = substr($row['key'], strlen('calendar_color_'));
+        if ($status && in_array($status, CALENDAR_COLOR_STATUSES, true) && is_string($row['value']) && $row['value'] !== '') {
+            $overrides[$status] = $row['value'];
+        }
+    }
+
+    return array_merge(DEFAULT_CALENDAR_COLORS, $overrides);
+}
+
+function saveCalendarColorSettings(PDO $pdo, array $colors): void
+{
+    if (!$colors) {
+        return;
+    }
+    $stmt = $pdo->prepare('INSERT INTO settings (`key`, `value`, updated_at) VALUES (:key, :value, :updated_at) ON DUPLICATE KEY UPDATE `value` = VALUES(`value`), updated_at = VALUES(updated_at)');
+    foreach ($colors as $status => $color) {
+        $stmt->execute([
+            'key' => sprintf('calendar_color_%s', $status),
+            'value' => $color,
+            'updated_at' => now(),
+        ]);
+    }
+}
+
+function clearCalendarColorSettings(PDO $pdo): void
+{
+    $pdo->prepare("DELETE FROM settings WHERE `key` LIKE 'calendar_color_%'")->execute();
+}
+
+function normalizeHexColor(string $value): ?string
+{
+    $trimmed = trim($value);
+    if ($trimmed === '') {
+        return null;
+    }
+    $trimmed = ltrim($trimmed, '#');
+    if (preg_match('/^[0-9a-fA-F]{6}$/', $trimmed) === 1) {
+        return '#' . strtoupper($trimmed);
+    }
+    if (preg_match('/^[0-9a-fA-F]{3}$/', $trimmed) === 1) {
+        return '#' . strtoupper(
+            $trimmed[0] . $trimmed[0] .
+            $trimmed[1] . $trimmed[1] .
+            $trimmed[2] . $trimmed[2]
+        );
+    }
+
+    return null;
 }
 
 function handleInvoices(string $method, array $segments): void
@@ -1626,6 +1791,69 @@ function handleGuestPortal(string $method, array $segments): void
     }
 
     jsonResponse(['error' => 'Unsupported guest portal action.'], 405);
+}
+
+function handleSettings(string $method, array $segments): void
+{
+    $pdo = db();
+    $subresource = $segments[1] ?? null;
+
+    if ($subresource === null) {
+        if ($method === 'GET') {
+            jsonResponse([
+                'resources' => ['calendar-colors'],
+            ]);
+        }
+        jsonResponse(['error' => 'Unsupported method.'], 405);
+    }
+
+    if ($subresource === 'calendar-colors') {
+        if ($method === 'GET') {
+            jsonResponse(['colors' => getCalendarColorSettings($pdo)]);
+        }
+
+        if ($method === 'DELETE') {
+            clearCalendarColorSettings($pdo);
+            jsonResponse(['colors' => getCalendarColorSettings($pdo)]);
+        }
+
+        if ($method === 'POST' || $method === 'PUT' || $method === 'PATCH') {
+            $data = parseJsonBody();
+            $payload = [];
+            if (isset($data['colors']) && is_array($data['colors'])) {
+                $payload = $data['colors'];
+            } elseif (is_array($data)) {
+                $payload = $data;
+            }
+
+            if (!$payload) {
+                jsonResponse(['error' => 'No colors supplied.'], 422);
+            }
+
+            $normalized = [];
+            foreach ($payload as $status => $color) {
+                if (!in_array($status, CALENDAR_COLOR_STATUSES, true)) {
+                    continue;
+                }
+                $normalizedColor = normalizeHexColor((string) $color);
+                if ($normalizedColor === null) {
+                    jsonResponse(['error' => sprintf('Invalid colour value for %s', $status)], 422);
+                }
+                $normalized[$status] = $normalizedColor;
+            }
+
+            if (!$normalized) {
+                jsonResponse(['error' => 'No valid colours supplied.'], 422);
+            }
+
+            saveCalendarColorSettings($pdo, $normalized);
+            jsonResponse(['colors' => getCalendarColorSettings($pdo)]);
+        }
+
+        jsonResponse(['error' => 'Unsupported method.'], 405);
+    }
+
+    jsonResponse(['error' => 'Unknown settings resource.'], 404);
 }
 
 function generateConfirmationNumber(): string

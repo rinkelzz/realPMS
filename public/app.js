@@ -1,4 +1,22 @@
 const API_BASE = '../backend/api/index.php';
+const CALENDAR_STATUS_ORDER = ['tentative', 'confirmed', 'checked_in', 'paid', 'checked_out', 'cancelled', 'no_show'];
+const CALENDAR_COLOR_DEFAULTS = {
+    tentative: '#f97316',
+    confirmed: '#2563eb',
+    checked_in: '#16a34a',
+    paid: '#0ea5e9',
+    checked_out: '#6b7280',
+    cancelled: '#ef4444',
+    no_show: '#7c3aed',
+};
+
+const RESERVATION_STATUS_ACTIONS = [
+    { status: 'checked_in', label: 'Check-in', title: 'Gast als angereist markieren' },
+    { status: 'paid', label: 'Bezahlt', title: 'Zahlung als erhalten markieren' },
+    { status: 'checked_out', label: 'Check-out', title: 'Gast als abgereist markieren' },
+    { status: 'no_show', label: 'No-Show', title: 'Gast als No-Show markieren' },
+];
+
 const state = {
     token: null,
     roomTypes: [],
@@ -14,6 +32,9 @@ const state = {
     editingCompanyId: null,
     loadedSections: new Set(),
     calendarLabelMode: 'guest',
+    calendarColors: { ...CALENDAR_COLOR_DEFAULTS },
+    calendarColorTokens: {},
+    calendarColorsLoaded: false,
 };
 
 const CALENDAR_DAYS = 14;
@@ -32,6 +53,7 @@ const notificationEl = document.getElementById('notification');
 const tokenInput = document.getElementById('api-token');
 const dashboardDateInput = document.getElementById('dashboard-date');
 const calendarLabelSelect = document.getElementById('calendar-label-mode');
+const calendarSettingsButton = document.getElementById('open-calendar-settings');
 const reportStartInput = document.getElementById('report-start');
 const reportEndInput = document.getElementById('report-end');
 const reservationForm = document.getElementById('reservation-form');
@@ -59,6 +81,10 @@ const companySummary = companyDetails ? companyDetails.querySelector('summary') 
 const companySubmitButton = companyForm ? companyForm.querySelector('button[type="submit"]') : null;
 const companyCancelButton = document.getElementById('company-cancel-edit');
 const companySummaryDefault = companySummary ? companySummary.textContent : 'Firma anlegen';
+const calendarColorForm = document.getElementById('calendar-color-form');
+const resetCalendarColorsButton = document.getElementById('reset-calendar-colors');
+const settingsReloadButton = document.getElementById('reload-settings');
+const occupancyCalendarContainer = document.getElementById('occupancy-calendar');
 
 const RESERVATION_STATUS_LABELS = {
     tentative: 'Voranfrage',
@@ -216,6 +242,11 @@ function setToken(token) {
         resetReservationForm();
         resetGuestForm();
         resetCompanyForm();
+        state.calendarColorsLoaded = false;
+        state.calendarColors = { ...CALENDAR_COLOR_DEFAULTS };
+        state.calendarColorTokens = {};
+        applyCalendarColors(state.calendarColors);
+        populateCalendarColorInputs();
         showMessage('API-Token entfernt. Bitte neuen Token speichern.', 'info');
     }
 }
@@ -266,6 +297,35 @@ document.querySelectorAll('.main-nav button').forEach((button) => {
     button.addEventListener('click', () => showSection(button.dataset.section));
 });
 
+if (calendarSettingsButton) {
+    calendarSettingsButton.addEventListener('click', () => {
+        showSection('settings');
+        const settingsSection = document.getElementById('settings');
+        if (settingsSection && typeof settingsSection.scrollIntoView === 'function') {
+            settingsSection.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        }
+    });
+}
+
+if (occupancyCalendarContainer) {
+    occupancyCalendarContainer.addEventListener('click', (event) => {
+        const target = event.target;
+        if (!(target instanceof Element)) {
+            return;
+        }
+        const cell = target.closest('td.occupied');
+        if (!cell) {
+            return;
+        }
+        const reservationId = Number(cell.dataset.reservationId);
+        if (!reservationId) {
+            return;
+        }
+        showSection('reservations');
+        startReservationEdit(reservationId);
+    });
+}
+
 function formatDate(value) {
     if (!value) {
         return '';
@@ -303,6 +363,101 @@ function formatCurrency(amount, currency = 'EUR') {
     return new Intl.NumberFormat('de-DE', { style: 'currency', currency }).format(number);
 }
 
+function normalizeHexColorInput(value) {
+    if (!value) {
+        return null;
+    }
+    const trimmed = value.toString().trim().replace(/^#/, '');
+    if (/^[0-9a-fA-F]{6}$/.test(trimmed)) {
+        return `#${trimmed.toLowerCase()}`;
+    }
+    if (/^[0-9a-fA-F]{3}$/.test(trimmed)) {
+        return `#${trimmed[0]}${trimmed[0]}${trimmed[1]}${trimmed[1]}${trimmed[2]}${trimmed[2]}`.toLowerCase();
+    }
+    return null;
+}
+
+function hexToRgb(color) {
+    const normalized = normalizeHexColorInput(color);
+    if (!normalized) {
+        return null;
+    }
+    const value = normalized.replace('#', '');
+    const bigint = parseInt(value, 16);
+    if (Number.isNaN(bigint)) {
+        return null;
+    }
+    return {
+        r: (bigint >> 16) & 255,
+        g: (bigint >> 8) & 255,
+        b: bigint & 255,
+    };
+}
+
+function rgbaFromHex(color, alpha = 0.55) {
+    const rgb = hexToRgb(color);
+    if (!rgb) {
+        return null;
+    }
+    const safeAlpha = Math.max(0, Math.min(1, alpha));
+    return `rgba(${rgb.r}, ${rgb.g}, ${rgb.b}, ${safeAlpha})`;
+}
+
+function getReadableTextColor(color) {
+    const rgb = hexToRgb(color);
+    if (!rgb) {
+        return '#ffffff';
+    }
+    const luminance = (0.2126 * rgb.r + 0.7152 * rgb.g + 0.0722 * rgb.b) / 255;
+    return luminance > 0.6 ? '#111827' : '#ffffff';
+}
+
+function applyCalendarColors(colors = state.calendarColors) {
+    const merged = { ...CALENDAR_COLOR_DEFAULTS, ...(colors || {}) };
+    const tokens = {};
+    CALENDAR_STATUS_ORDER.forEach((status) => {
+        const fallback = CALENDAR_COLOR_DEFAULTS[status];
+        const normalized = normalizeHexColorInput(merged[status]) || fallback;
+        const border = rgbaFromHex(normalized, 0.55) || rgbaFromHex(fallback, 0.55) || 'rgba(37, 99, 235, 0.55)';
+        const textColor = getReadableTextColor(normalized);
+        document.documentElement.style.setProperty(`--calendar-color-${status}`, normalized);
+        document.documentElement.style.setProperty(`--calendar-border-${status}`, border);
+        document.documentElement.style.setProperty(`--calendar-text-${status}`, textColor);
+        tokens[status] = { color: normalized, border, text: textColor };
+    });
+    state.calendarColors = Object.fromEntries(
+        CALENDAR_STATUS_ORDER.map((status) => [status, tokens[status].color])
+    );
+    state.calendarColorTokens = tokens;
+}
+
+function populateCalendarColorInputs() {
+    if (!calendarColorForm) {
+        return;
+    }
+    CALENDAR_STATUS_ORDER.forEach((status) => {
+        const input = calendarColorForm.querySelector(`input[data-status="${status}"]`);
+        if (input) {
+            input.value = (state.calendarColors[status] || CALENDAR_COLOR_DEFAULTS[status]).toLowerCase();
+        }
+    });
+}
+
+function getCalendarColorToken(status) {
+    const normalized = normalizeStatusClass(status);
+    const token = state.calendarColorTokens[normalized];
+    if (token) {
+        return token;
+    }
+    const fallback = CALENDAR_COLOR_DEFAULTS[normalized] || CALENDAR_COLOR_DEFAULTS.confirmed;
+    const border = rgbaFromHex(fallback, 0.55) || 'rgba(37, 99, 235, 0.55)';
+    return {
+        color: fallback,
+        border,
+        text: getReadableTextColor(fallback),
+    };
+}
+
 function toSqlDateTime(value) {
     if (!value) {
         return null;
@@ -329,6 +484,7 @@ function renderTable(containerId, columns, rows, emptyState = 'Keine Daten vorha
         return;
     }
     const table = document.createElement('table');
+    table.className = 'data-table';
     const thead = document.createElement('thead');
     const headRow = document.createElement('tr');
     columns.forEach((column) => {
@@ -574,14 +730,60 @@ async function startReservationEdit(reservationId) {
 function renderReservationsTable(reservations) {
     renderTable('reservations-list', [
         { key: 'confirmation_number', label: 'Bestätigungsnr.' },
-        { key: 'guest', label: 'Gast', render: (row) => `${row.first_name || ''} ${row.last_name || ''}`.trim() },
+        {
+            key: 'guest',
+            label: 'Gast',
+            render: (row) => {
+                const guestName = `${row.first_name || ''} ${row.last_name || ''}`.trim();
+                if (row.company_name) {
+                    return `${guestName || ''}<div class="table-subline">${row.company_name}</div>`;
+                }
+                return guestName;
+            },
+        },
         { key: 'check_in_date', label: 'Check-in', render: (row) => formatDate(row.check_in_date) },
         { key: 'check_out_date', label: 'Check-out', render: (row) => formatDate(row.check_out_date) },
         { key: 'status', label: 'Status', render: (row) => formatReservationStatus(row.status) },
         { key: 'rooms', label: 'Zimmer', render: (row) => (row.rooms || []).map((room) => room.room_number).join(', ') },
         { key: 'total_amount', label: 'Gesamt', render: (row) => formatCurrency(row.total_amount, row.currency || 'EUR') },
-        { key: 'actions', label: 'Aktionen', render: (row) => `<button type="button" class="secondary reservation-edit" data-id="${row.id}">Bearbeiten</button>` },
+        {
+            key: 'actions',
+            label: 'Aktionen',
+            render: (row) => renderReservationActions(row),
+        },
     ], reservations);
+}
+
+function renderReservationActions(row) {
+    const status = normalizeStatusClass(row.status || '');
+    const buttons = RESERVATION_STATUS_ACTIONS.map((action) => {
+        const token = getCalendarColorToken(action.status);
+        const isDisabled = status === action.status;
+        const style = `--action-color:${token.color};--action-border:${token.border};--action-text:${token.text};`;
+        const titleAttr = action.title ? ` title="${action.title}"` : '';
+        return `<button type="button" class="reservation-status status-action" data-id="${row.id}" data-status="${action.status}" style="${style}"${titleAttr}${isDisabled ? ' disabled' : ''}>${action.label}</button>`;
+    }).join('');
+
+    return `<div class="table-actions">${buttons}<button type="button" class="secondary reservation-edit" data-id="${row.id}">Bearbeiten</button></div>`;
+}
+
+async function updateReservationStatus(reservationId, status) {
+    if (!requireToken()) {
+        return;
+    }
+    try {
+        await apiFetch(`reservations/${reservationId}/status`, {
+            method: 'POST',
+            body: JSON.stringify({ status }),
+        });
+        showMessage('Reservierungsstatus aktualisiert.', 'success');
+        await Promise.all([
+            loadReservations(true),
+            loadDashboard(true),
+        ]);
+    } catch (error) {
+        showMessage(error.message, 'error');
+    }
 }
 
 function renderGuestsTable(guests) {
@@ -753,7 +955,7 @@ function renderOccupancyCalendar(rooms, reservations, startDateStr, days = CALEN
 
     reservationsList.forEach((reservation) => {
         const status = normalizeStatusClass(reservation.status || '');
-        if (status === 'cancelled' || status === 'no_show') {
+        if (status === 'cancelled') {
             return;
         }
         const checkIn = parseISODate(reservation.check_in_date);
@@ -852,6 +1054,12 @@ function renderOccupancyCalendar(rooms, reservations, startDateStr, days = CALEN
                 if (statusClass) {
                     cell.classList.add(`status-${statusClass}`);
                 }
+                if (statusClass) {
+                    cell.dataset.status = statusClass;
+                }
+                if (reservation.id) {
+                    cell.dataset.reservationId = String(reservation.id);
+                }
                 const guestName = `${reservation.first_name || ''} ${reservation.last_name || ''}`.trim();
                 const label = getReservationCalendarLabel(reservation, labelMode);
                 const statusLabel = formatReservationStatus(reservation.status);
@@ -899,6 +1107,7 @@ async function bootstrap() {
         state.guests = guests;
         state.companies = companies;
         state.companiesLoaded = true;
+        await loadCalendarColors(true);
         populateRoomTypeSelects();
         populateRatePlanSelect();
         populateRoomOptions();
@@ -1058,7 +1267,7 @@ async function loadDashboard(force = false) {
             { key: 'occupancy_rate', label: 'Auslastung', render: (row) => `${row.occupancy_rate}%` },
         ], Array.isArray(occupancy) ? occupancy : []);
 
-        renderOccupancyCalendar(rooms, reservations, targetDateValue, CALENDAR_DAYS);
+        renderOccupancyCalendar(rooms, reservations, targetDateValue, CALENDAR_DAYS, state.calendarLabelMode);
         state.loadedSections.add('dashboard');
     } catch (error) {
         showMessage(error.message, 'error');
@@ -1078,6 +1287,42 @@ async function loadReservations(force = false) {
         state.reservations = reservations;
         renderReservationsTable(reservations);
         state.loadedSections.add('reservations');
+    } catch (error) {
+        showMessage(error.message, 'error');
+    }
+}
+
+async function loadCalendarColors(force = false) {
+    if (!requireToken()) {
+        return null;
+    }
+    if (!force && state.calendarColorsLoaded) {
+        return state.calendarColors;
+    }
+    try {
+        const response = await apiFetch('settings/calendar-colors');
+        const colors = response && typeof response.colors === 'object' ? response.colors : {};
+        applyCalendarColors({ ...CALENDAR_COLOR_DEFAULTS, ...colors });
+        state.calendarColorsLoaded = true;
+        return state.calendarColors;
+    } catch (error) {
+        showMessage(error.message, 'error');
+        return state.calendarColors;
+    }
+}
+
+async function loadSettings(force = false) {
+    if (!requireToken()) {
+        return;
+    }
+    if (!force && state.loadedSections.has('settings')) {
+        populateCalendarColorInputs();
+        return;
+    }
+    try {
+        await loadCalendarColors(true);
+        populateCalendarColorInputs();
+        state.loadedSections.add('settings');
     } catch (error) {
         showMessage(error.message, 'error');
     }
@@ -1370,6 +1615,7 @@ const sectionLoaders = {
     companies: () => loadCompanies(true),
     guests: () => loadGuests(true),
     integrations: () => loadIntegrations(true),
+    settings: () => loadSettings(true),
 };
 
 // Form submissions
@@ -1491,6 +1737,9 @@ document.getElementById('reload-users').addEventListener('click', () => loadUser
 document.getElementById('reload-companies').addEventListener('click', () => loadCompanies(true));
 document.getElementById('reload-guests').addEventListener('click', () => loadGuests(true));
 document.getElementById('reload-integrations').addEventListener('click', () => loadIntegrations(true));
+if (settingsReloadButton) {
+    settingsReloadButton.addEventListener('click', () => loadSettings(true));
+}
 document.getElementById('refresh-dashboard').addEventListener('click', () => loadDashboard(true));
 dashboardDateInput.addEventListener('change', () => loadDashboard(true));
 document.getElementById('refresh-reports').addEventListener('click', () => loadReports(true));
@@ -1846,6 +2095,15 @@ document.getElementById('guest-lookup').addEventListener('submit', async (event)
 
 if (reservationsList) {
     reservationsList.addEventListener('click', (event) => {
+        const statusButton = event.target.closest('.reservation-status');
+        if (statusButton) {
+            const reservationId = Number(statusButton.dataset.id);
+            const nextStatus = statusButton.dataset.status;
+            if (Number.isFinite(reservationId) && nextStatus) {
+                updateReservationStatus(reservationId, nextStatus);
+            }
+            return;
+        }
         const button = event.target.closest('.reservation-edit');
         if (!button) {
             return;
@@ -1875,6 +2133,66 @@ if (calendarLabelSelect) {
             CALENDAR_DAYS,
             nextMode,
         );
+    });
+}
+
+if (calendarColorForm) {
+    calendarColorForm.addEventListener('input', (event) => {
+        const input = event.target.closest('input[type="color"][data-status]');
+        if (!input) {
+            return;
+        }
+        const status = input.dataset.status;
+        const normalized = normalizeHexColorInput(input.value);
+        if (status && normalized) {
+            state.calendarColors[status] = normalized;
+            applyCalendarColors(state.calendarColors);
+        }
+    });
+
+    calendarColorForm.addEventListener('submit', async (event) => {
+        event.preventDefault();
+        if (!requireToken()) {
+            return;
+        }
+        const payload = {};
+        CALENDAR_STATUS_ORDER.forEach((status) => {
+            const input = calendarColorForm.querySelector(`input[data-status="${status}"]`);
+            const normalized = normalizeHexColorInput(input ? input.value : null) || CALENDAR_COLOR_DEFAULTS[status];
+            payload[status] = normalized;
+        });
+        try {
+            const response = await apiFetch('settings/calendar-colors', {
+                method: 'PUT',
+                body: JSON.stringify({ colors: payload }),
+            });
+            const colors = response && typeof response.colors === 'object' ? response.colors : payload;
+            applyCalendarColors(colors);
+            populateCalendarColorInputs();
+            state.calendarColorsLoaded = true;
+            showMessage('Kalenderfarben gespeichert.', 'success');
+        } catch (error) {
+            showMessage(error.message, 'error');
+        }
+    });
+}
+
+if (resetCalendarColorsButton) {
+    resetCalendarColorsButton.addEventListener('click', async (event) => {
+        event.preventDefault();
+        if (!requireToken()) {
+            return;
+        }
+        try {
+            const response = await apiFetch('settings/calendar-colors', { method: 'DELETE' });
+            const colors = response && typeof response.colors === 'object' ? response.colors : CALENDAR_COLOR_DEFAULTS;
+            applyCalendarColors(colors);
+            populateCalendarColorInputs();
+            state.calendarColorsLoaded = true;
+            showMessage('Kalenderfarben zurückgesetzt.', 'success');
+        } catch (error) {
+            showMessage(error.message, 'error');
+        }
     });
 }
 

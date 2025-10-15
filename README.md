@@ -56,7 +56,9 @@ Neben der reinen API steht jetzt ein leichtgewichtiger Administrations-Client zu
   ```
   und rufe anschließend `http://localhost:8080/` im Browser auf. Die API muss parallel (z. B. über Apache/Nginx oder einen zweiten PHP-Built-in-Server) erreichbar sein.
 - Im Bereich „Firmen“ legst du Unternehmensprofile an und bearbeitest sie; Gäste können direkt im Gästebereich einer Firma zugeordnet oder dort editiert werden.
-- Die Dashboard-Kalenderansicht sortiert Zimmer nach Kategorie, markiert Angereist/Bezahlt/Abgereist farblich und lässt sich per Umschalter zwischen Gast- und Firmenname umstellen.
+- Die Dashboard-Kalenderansicht sortiert Zimmer nach Kategorie, markiert Angereist/Bezahlt/Abgereist farblich und lässt sich per Umschalter zwischen Gast- und Firmenname umstellen; ein Klick auf eine belegte Zelle springt direkt zur entsprechenden Reservierung.
+- Über den Button „Farben anpassen“ im Dashboard gelangst du direkt zu den Kalender-Einstellungen und kannst alle Status-Farben dauerhaft speichern oder zurücksetzen.
+- Die Reservierungsliste bietet farbige Schnellaktionen für Check-in, Zahlungseingang, Check-out und No-Show – ideal, um Gäste schnell als angereist, abgereist oder No-Show zu markieren.
 
 ## REST API für den MVP-Funktionsumfang
 
@@ -77,7 +79,7 @@ Nach dem erfolgreichen Datenbank-Setup stellt `backend/api/index.php` eine schla
     "notes": "Late arrival"
   }
   ```
-- `POST /backend/api/reservations/{id}/check-in` bzw. `/check-out` – Walk-in/Walk-out inkl. automatischem Status-Log und Zimmerstatus.
+- `POST /backend/api/reservations/{id}/status` – Aktualisiert den Reservierungsstatus (`checked_in`, `paid`, `checked_out`, `no_show` usw.) inklusive Logbuch, Zimmer- und Housekeeping-Updates. Aus Kompatibilitätsgründen funktionieren weiterhin die Kurzpfade `/check-in`, `/check-out`, `/pay` und `/no-show`.
 - `POST /backend/api/reservations/{id}/documents` – Hinterlegt Meldescheine oder andere Dateien (es werden Metadaten gespeichert, die Dateiablage erfolgt extern).
 - `GET|POST|PATCH /backend/api/guests` – Verwalten von Gästestammdaten inklusive Firmenzuordnung und optionaler Suchfunktion via `?search=`.
 - `GET|POST|PATCH /backend/api/companies` – Firmenstammdaten für Reisebüros, Unternehmen oder Agenturen; Gäste lassen sich diesen Einträgen zuweisen.
@@ -102,6 +104,10 @@ Nach dem erfolgreichen Datenbank-Setup stellt `backend/api/index.php` eine schla
 
 ### Integrationen (Platzhalter)
 - `GET /backend/api/integrations` – Liefert den aktuellen Verbindungsstatus zu Channel-Managern, POS, Türschließsystemen und Buchhaltung.
+
+### Einstellungen
+- `GET /backend/api/settings` – Liefert die verfügbaren Einstellungsbereiche.
+- `GET|PUT|DELETE /backend/api/settings/calendar-colors` – Liest, speichert oder setzt die Kalenderfarben zurück. `PUT` erwartet ein Objekt nach dem Schema `{ "colors": { "confirmed": "#2563eb", "checked_in": "#16a34a", ... } }`.
 
 ### Gästeportal / Self-Service
 - `GET /backend/api/guest-portal/reservations/{confirmation}` – Gäste sehen Reservierungsdetails, Zimmer und Dokumente.

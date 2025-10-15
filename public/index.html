@@ -31,6 +31,7 @@
     <button type="button" data-section="companies">Firmen</button>
     <button type="button" data-section="guests">Gäste</button>
     <button type="button" data-section="integrations">Integrationen</button>
+    <button type="button" data-section="settings">Einstellungen</button>
     <button type="button" data-section="guest-portal">Gästeportal</button>
 </nav>
 <main>
@@ -64,6 +65,7 @@
                         <option value="guest">Gastname</option>
                         <option value="company">Firmenname</option>
                     </select>
+                    <button type="button" id="open-calendar-settings" class="secondary">Farben anpassen</button>
                 </div>
             </div>
             <div class="calendar-wrapper">
@@ -78,6 +80,7 @@
             <h2>Reservierungen</h2>
             <button type="button" id="reload-reservations" class="secondary">Neu laden</button>
         </div>
+        <p class="table-hint">Nutzen Sie die farbigen Schnellaktionen, um Gäste mit einem Klick einzuchecken, als bezahlt zu markieren, auszuchecken oder als No-Show zu vermerken.</p>
         <div id="reservations-list" class="table-wrapper"></div>
         <details class="form-panel">
             <summary>Neue Reservierung anlegen</summary>
@@ -493,6 +496,53 @@
                 <button type="button" id="reload-integrations" class="secondary">Neu laden</button>
             </div>
             <div id="integrations-list" class="integration-grid"></div>
+        </div>
+    </section>
+
+    <section id="settings" data-section>
+        <div class="section-header">
+            <h2>Einstellungen</h2>
+            <button type="button" id="reload-settings" class="secondary">Neu laden</button>
+        </div>
+        <div class="panel">
+            <h3>Kalenderfarben</h3>
+            <p class="muted">Wählen Sie die Farben für die Reservierungsstatus im Dashboard-Kalender und in den Schnellaktionen.</p>
+            <form id="calendar-color-form" class="stacked-form">
+                <div class="color-grid">
+                    <label>
+                        <span>Voranfrage</span>
+                        <input type="color" data-status="tentative" value="#f97316">
+                    </label>
+                    <label>
+                        <span>Bestätigt</span>
+                        <input type="color" data-status="confirmed" value="#2563eb">
+                    </label>
+                    <label>
+                        <span>Angereist</span>
+                        <input type="color" data-status="checked_in" value="#16a34a">
+                    </label>
+                    <label>
+                        <span>Bezahlt</span>
+                        <input type="color" data-status="paid" value="#0ea5e9">
+                    </label>
+                    <label>
+                        <span>Abgereist</span>
+                        <input type="color" data-status="checked_out" value="#6b7280">
+                    </label>
+                    <label>
+                        <span>Storniert</span>
+                        <input type="color" data-status="cancelled" value="#ef4444">
+                    </label>
+                    <label>
+                        <span>No-Show</span>
+                        <input type="color" data-status="no_show" value="#7c3aed">
+                    </label>
+                </div>
+                <div class="form-actions">
+                    <button type="submit">Speichern</button>
+                    <button type="button" id="reset-calendar-colors" class="secondary">Zurücksetzen</button>
+                </div>
+            </form>
         </div>
     </section>
 

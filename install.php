@@ -242,6 +242,15 @@ function getSchemaStatements(): array
                 CONSTRAINT fk_permission_role_role FOREIGN KEY (role_id) REFERENCES roles(id) ON DELETE CASCADE
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
         SQL,
+        'settings' => <<<'SQL'
+            CREATE TABLE IF NOT EXISTS settings (
+                id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+                `key` VARCHAR(150) NOT NULL UNIQUE,
+                `value` TEXT NULL,
+                created_at TIMESTAMP NULL,
+                updated_at TIMESTAMP NULL
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+        SQL,
         'companies' => <<<'SQL'
             CREATE TABLE IF NOT EXISTS companies (
                 id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,

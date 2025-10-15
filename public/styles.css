@@ -8,6 +8,27 @@
     --text: #1f2937;
     --muted: #6b7280;
     --border: #d1d5db;
+    --calendar-color-tentative: #f97316;
+    --calendar-border-tentative: rgba(249, 115, 22, 0.55);
+    --calendar-text-tentative: #ffffff;
+    --calendar-color-confirmed: #2563eb;
+    --calendar-border-confirmed: rgba(37, 99, 235, 0.55);
+    --calendar-text-confirmed: #ffffff;
+    --calendar-color-checked_in: #16a34a;
+    --calendar-border-checked_in: rgba(22, 163, 74, 0.55);
+    --calendar-text-checked_in: #ffffff;
+    --calendar-color-paid: #0ea5e9;
+    --calendar-border-paid: rgba(14, 165, 233, 0.55);
+    --calendar-text-paid: #ffffff;
+    --calendar-color-checked_out: #6b7280;
+    --calendar-border-checked_out: rgba(107, 114, 128, 0.55);
+    --calendar-text-checked_out: #ffffff;
+    --calendar-color-cancelled: #ef4444;
+    --calendar-border-cancelled: rgba(239, 68, 68, 0.55);
+    --calendar-text-cancelled: #ffffff;
+    --calendar-color-no_show: #7c3aed;
+    --calendar-border-no_show: rgba(124, 58, 237, 0.55);
+    --calendar-text-no_show: #ffffff;
     font-family: "Inter", "Segoe UI", system-ui, sans-serif;
 }
 
@@ -194,12 +215,92 @@ section[data-section].active {
 
 .table-wrapper {
     overflow-x: auto;
+    background: var(--surface);
+    border-radius: 1rem;
+    box-shadow: 0 10px 25px rgba(15, 23, 42, 0.05);
+    padding: 1rem 1.25rem;
+    margin-bottom: 1.5rem;
 }
 
-.table-wrapper table {
+.panel .table-wrapper {
+    background: transparent;
+    box-shadow: none;
+    padding: 0;
+    margin-bottom: 0;
+    margin-top: 1rem;
+}
+
+.data-table {
     width: 100%;
     border-collapse: collapse;
-    min-width: 400px;
+    min-width: 520px;
+}
+
+.data-table thead th {
+    font-size: .75rem;
+    text-transform: uppercase;
+    letter-spacing: .05em;
+    color: var(--muted);
+    background: var(--surface-alt);
+}
+
+.data-table th,
+.data-table td {
+    text-align: left;
+    padding: .75rem 1rem;
+    border-bottom: 1px solid var(--border);
+    vertical-align: top;
+    word-break: break-word;
+}
+
+.data-table tbody tr:hover {
+    background: var(--surface-alt);
+}
+
+.table-subline {
+    display: block;
+    font-size: .75rem;
+    color: var(--muted);
+    margin-top: .25rem;
+}
+
+.table-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: .5rem;
+    align-items: center;
+}
+
+.table-hint {
+    margin: 0 0 1rem;
+    color: var(--muted);
+}
+
+button.status-action {
+    background: var(--action-color, var(--primary));
+    border: 1px solid var(--action-border, transparent);
+    color: var(--action-text, #ffffff);
+    padding: .4rem .75rem;
+    border-radius: 999px;
+    font-size: .75rem;
+    line-height: 1;
+    font-weight: 600;
+}
+
+button.status-action:hover {
+    background: var(--action-color, var(--primary));
+    filter: brightness(0.92);
+}
+
+button.status-action:disabled,
+button.status-action:disabled:hover {
+    opacity: .6;
+    cursor: default;
+    filter: none;
+}
+
+.table-actions .reservation-edit {
+    padding: .45rem .9rem;
 }
 
 .calendar-wrapper {
@@ -250,30 +351,54 @@ section[data-section].active {
 }
 
 .calendar-table td.occupied {
-    background: var(--primary);
-    color: #fff;
+    background: var(--calendar-color-confirmed);
+    color: var(--calendar-text-confirmed);
     font-weight: 600;
-    border-color: rgba(37, 99, 235, 0.55);
-}
-
-.calendar-table td.occupied.status-checked_in {
-    background: #16a34a;
-    border-color: rgba(22, 163, 74, 0.55);
+    border-color: var(--calendar-border-confirmed);
+    cursor: pointer;
 }
 
 .calendar-table td.occupied.status-tentative {
-    background: #f97316;
-    border-color: rgba(249, 115, 22, 0.55);
+    background: var(--calendar-color-tentative);
+    color: var(--calendar-text-tentative);
+    border-color: var(--calendar-border-tentative);
+}
+
+.calendar-table td.occupied.status-confirmed {
+    background: var(--calendar-color-confirmed);
+    color: var(--calendar-text-confirmed);
+    border-color: var(--calendar-border-confirmed);
+}
+
+.calendar-table td.occupied.status-checked_in {
+    background: var(--calendar-color-checked_in);
+    color: var(--calendar-text-checked_in);
+    border-color: var(--calendar-border-checked_in);
 }
 
 .calendar-table td.occupied.status-paid {
-    background: #0ea5e9;
-    border-color: rgba(14, 165, 233, 0.55);
+    background: var(--calendar-color-paid);
+    color: var(--calendar-text-paid);
+    border-color: var(--calendar-border-paid);
 }
 
 .calendar-table td.occupied.status-checked_out {
-    background: #6b7280;
-    border-color: rgba(107, 114, 128, 0.55);
+    background: var(--calendar-color-checked_out);
+    color: var(--calendar-text-checked_out);
+    border-color: var(--calendar-border-checked_out);
+}
+
+.calendar-table td.occupied.status-cancelled {
+    background: var(--calendar-color-cancelled);
+    color: var(--calendar-text-cancelled);
+    border-color: var(--calendar-border-cancelled);
+}
+
+.calendar-table td.occupied.status-no_show {
+    background: var(--calendar-color-no_show);
+    color: var(--calendar-text-no_show);
+    border-color: var(--calendar-border-no_show);
+    background-image: repeating-linear-gradient(135deg, rgba(255, 255, 255, 0.28) 0 12px, transparent 12px 24px);
 }
 
 .calendar-table th.today,
@@ -297,18 +422,6 @@ section[data-section].active {
     color: var(--muted);
 }
 
-.table-wrapper th,
-.table-wrapper td {
-    text-align: left;
-    padding: .65rem .75rem;
-    border-bottom: 1px solid var(--border);
-    vertical-align: top;
-}
-
-.table-wrapper tbody tr:hover {
-    background: var(--surface-alt);
-}
-
 .form-panel {
     background: var(--surface);
     border-radius: 1rem;
@@ -325,6 +438,35 @@ section[data-section].active {
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
     gap: 1rem 1.5rem;
+}
+
+.color-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+    gap: 1rem;
+    margin-bottom: 1rem;
+}
+
+.color-grid label {
+    display: flex;
+    flex-direction: column;
+    gap: .35rem;
+    font-weight: 600;
+}
+
+.color-grid span {
+    font-size: .85rem;
+    color: var(--muted);
+}
+
+.color-grid input[type="color"] {
+    width: 100%;
+    height: 2.75rem;
+    border-radius: .75rem;
+    border: 1px solid var(--border);
+    padding: 0;
+    cursor: pointer;
+    background: transparent;
 }
 
 .grid-form fieldset {
