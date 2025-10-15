@@ -49,6 +49,28 @@ foreach ($statements as $table => $sql) {
     }
 }
 
+try {
+    if (!columnExists($pdo, 'guests', 'company_id')) {
+        $pdo->exec('ALTER TABLE guests ADD COLUMN company_id BIGINT UNSIGNED NULL AFTER country');
+        $results[] = '✓ Added column `company_id` to `guests`';
+    } else {
+        $results[] = '• Column `company_id` already present on `guests`';
+    }
+} catch (PDOException $exception) {
+    respond('Error ensuring company column on guests: ' . $exception->getMessage(), true, $results);
+}
+
+try {
+    if (!foreignKeyExists($pdo, 'guests', 'fk_guests_company')) {
+        $pdo->exec('ALTER TABLE guests ADD CONSTRAINT fk_guests_company FOREIGN KEY (company_id) REFERENCES companies(id) ON DELETE SET NULL');
+        $results[] = '✓ Added foreign key `fk_guests_company`';
+    } else {
+        $results[] = '• Foreign key `fk_guests_company` already present';
+    }
+} catch (PDOException $exception) {
+    respond('Error ensuring guest/company relation: ' . $exception->getMessage(), true, $results);
+}
+
 respond('Installation completed successfully.', false, $results);
 
 /**
@@ -121,6 +143,24 @@ function loadDotEnv(string $path): array
     return $values;
 }
 
+function columnExists(PDO $pdo, string $table, string $column): bool
+{
+    $query = sprintf('SHOW COLUMNS FROM `%s` LIKE %s', $table, $pdo->quote($column));
+    $stmt = $pdo->query($query);
+    return $stmt !== false && $stmt->fetch() !== false;
+}
+
+function foreignKeyExists(PDO $pdo, string $table, string $constraintName): bool
+{
+    $sql = 'SELECT CONSTRAINT_NAME FROM INFORMATION_SCHEMA.REFERENTIAL_CONSTRAINTS WHERE CONSTRAINT_SCHEMA = DATABASE() AND TABLE_NAME = :table AND CONSTRAINT_NAME = :constraint';
+    $stmt = $pdo->prepare($sql);
+    $stmt->execute([
+        'table' => $table,
+        'constraint' => $constraintName,
+    ]);
+    return $stmt->fetchColumn() !== false;
+}
+
 function getSchemaStatements(): array
 {
     return [
@@ -174,6 +214,20 @@ function getSchemaStatements(): array
                 CONSTRAINT fk_permission_role_role FOREIGN KEY (role_id) REFERENCES roles(id) ON DELETE CASCADE
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
         SQL,
+        'companies' => <<<'SQL'
+            CREATE TABLE IF NOT EXISTS companies (
+                id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+                name VARCHAR(150) NOT NULL,
+                email VARCHAR(150) NULL,
+                phone VARCHAR(50) NULL,
+                address VARCHAR(255) NULL,
+                city VARCHAR(100) NULL,
+                country VARCHAR(100) NULL,
+                notes TEXT NULL,
+                created_at TIMESTAMP NULL,
+                updated_at TIMESTAMP NULL
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+        SQL,
         'guests' => <<<'SQL'
             CREATE TABLE IF NOT EXISTS guests (
                 id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
@@ -184,9 +238,11 @@ function getSchemaStatements(): array
                 address VARCHAR(255) NULL,
                 city VARCHAR(100) NULL,
                 country VARCHAR(100) NULL,
+                company_id BIGINT UNSIGNED NULL,
                 notes TEXT NULL,
                 created_at TIMESTAMP NULL,
-                updated_at TIMESTAMP NULL
+                updated_at TIMESTAMP NULL,
+                CONSTRAINT fk_guests_company FOREIGN KEY (company_id) REFERENCES companies(id) ON DELETE SET NULL
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
         SQL,
         'room_types' => <<<'SQL'

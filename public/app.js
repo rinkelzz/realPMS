@@ -7,7 +7,11 @@ const state = {
     reservations: [],
     roles: [],
     guests: [],
+    companies: [],
+    companiesLoaded: false,
     editingReservationId: null,
+    editingGuestId: null,
+    editingCompanyId: null,
     loadedSections: new Set(),
 };
 
@@ -27,6 +31,22 @@ const reservationsList = document.getElementById('reservations-list');
 const reservationCapacityEl = document.getElementById('reservation-capacity');
 const reservationRoomsSelect = reservationForm ? reservationForm.querySelector('select[name="rooms"]') : null;
 const guestSelect = reservationForm ? reservationForm.querySelector('select[name="guest_id"]') : null;
+const reservationGuestCompanySelect = reservationForm ? reservationForm.querySelector('select[name="guest_company"]') : null;
+const guestForm = document.getElementById('guest-form');
+const guestDetails = guestForm ? guestForm.closest('details') : null;
+const guestSummary = guestDetails ? guestDetails.querySelector('summary') : null;
+const guestSubmitButton = guestForm ? guestForm.querySelector('button[type="submit"]') : null;
+const guestCancelButton = document.getElementById('guest-cancel-edit');
+const guestCompanySelect = guestForm ? guestForm.querySelector('select[name="company_id"]') : null;
+const guestSummaryDefault = guestSummary ? guestSummary.textContent : 'Gast anlegen';
+const guestsList = document.getElementById('guests-list');
+const companiesList = document.getElementById('companies-list');
+const companyForm = document.getElementById('company-form');
+const companyDetails = companyForm ? companyForm.closest('details') : null;
+const companySummary = companyDetails ? companyDetails.querySelector('summary') : null;
+const companySubmitButton = companyForm ? companyForm.querySelector('button[type="submit"]') : null;
+const companyCancelButton = document.getElementById('company-cancel-edit');
+const companySummaryDefault = companySummary ? companySummary.textContent : 'Firma anlegen';
 
 function showMessage(message, type = 'info', timeout = 4000) {
     if (!notificationEl) {
@@ -137,8 +157,23 @@ function setToken(token) {
         bootstrap();
     } else {
         localStorage.removeItem('realpms_api_token');
+        state.roomTypes = [];
+        state.ratePlans = [];
+        state.rooms = [];
+        state.reservations = [];
+        state.roles = [];
+        state.guests = [];
+        state.companies = [];
+        state.companiesLoaded = false;
+        state.editingReservationId = null;
+        state.editingGuestId = null;
+        state.editingCompanyId = null;
         state.loadedSections.clear();
+        populateGuestSelect();
+        populateCompanyDropdowns();
         resetReservationForm();
+        resetGuestForm();
+        resetCompanyForm();
         showMessage('API-Token entfernt. Bitte neuen Token speichern.', 'info');
     }
 }
@@ -319,6 +354,34 @@ function updateReservationCapacityHint() {
     }
 }
 
+function populateCompanyDropdowns() {
+    const companies = [...state.companies].sort((a, b) => (a.name || '').localeCompare(b.name || '', 'de', { sensitivity: 'base' }));
+
+    if (guestCompanySelect) {
+        const current = guestCompanySelect.value;
+        const options = ['<option value="">Keine Firma</option>'];
+        companies.forEach((company) => {
+            options.push(`<option value="${company.id}">${company.name || ''}</option>`);
+        });
+        guestCompanySelect.innerHTML = options.join('');
+        if (current && [...guestCompanySelect.options].some((option) => option.value === current)) {
+            guestCompanySelect.value = current;
+        }
+    }
+
+    if (reservationGuestCompanySelect) {
+        const current = reservationGuestCompanySelect.value;
+        const options = ['<option value="">Keine Firma</option>'];
+        companies.forEach((company) => {
+            options.push(`<option value="${company.id}">${company.name || ''}</option>`);
+        });
+        reservationGuestCompanySelect.innerHTML = options.join('');
+        if (current && [...reservationGuestCompanySelect.options].some((option) => option.value === current)) {
+            reservationGuestCompanySelect.value = current;
+        }
+    }
+}
+
 function populateGuestSelect() {
     if (!guestSelect) {
         return;
@@ -333,7 +396,8 @@ function populateGuestSelect() {
         return (a.first_name || '').localeCompare(b.first_name || '', 'de', { sensitivity: 'base' });
     });
     sortedGuests.forEach((guest) => {
-        options.push(`<option value="${guest.id}">${guest.last_name || ''}${guest.last_name && guest.first_name ? ', ' : ''}${guest.first_name || ''}</option>`);
+        const companyLabel = guest.company_name ? ` – ${guest.company_name}` : '';
+        options.push(`<option value="${guest.id}">${guest.last_name || ''}${guest.last_name && guest.first_name ? ', ' : ''}${guest.first_name || ''}${companyLabel}</option>`);
     });
     guestSelect.innerHTML = options.join('');
     if (currentValue && [...guestSelect.options].some((option) => option.value === currentValue)) {
@@ -351,6 +415,9 @@ function applyGuestToForm(guest) {
     reservationForm.guest_last.value = guest?.last_name || '';
     reservationForm.guest_email.value = guest?.email || '';
     reservationForm.guest_phone.value = guest?.phone || '';
+    if (reservationGuestCompanySelect) {
+        reservationGuestCompanySelect.value = guest?.company_id ? String(guest.company_id) : '';
+    }
 }
 
 function resetReservationForm() {
@@ -372,6 +439,7 @@ function resetReservationForm() {
     populateRatePlanSelect();
     populateRoomOptions();
     populateGuestSelect();
+    populateCompanyDropdowns();
     applyGuestToForm(null);
     if (reservationDetails) {
         reservationDetails.open = wasOpen;
@@ -386,6 +454,7 @@ function fillReservationForm(reservation) {
     populateRatePlanSelect();
     populateRoomOptions();
     populateGuestSelect();
+    populateCompanyDropdowns();
 
     reservationForm.check_in.value = reservation.check_in_date ? reservation.check_in_date.slice(0, 10) : '';
     reservationForm.check_out.value = reservation.check_out_date ? reservation.check_out_date.slice(0, 10) : '';
@@ -404,10 +473,13 @@ function fillReservationForm(reservation) {
     }
 
     const guestSnapshot = {
+        id: reservation.guest_id || null,
         first_name: reservation.first_name || '',
         last_name: reservation.last_name || '',
         email: reservation.email || '',
         phone: reservation.phone || '',
+        company_id: reservation.company_id || null,
+        company_name: reservation.company_name || null,
     };
 
     if (reservation.guest_id) {
@@ -468,6 +540,145 @@ function renderReservationsTable(reservations) {
         { key: 'total_amount', label: 'Gesamt', render: (row) => formatCurrency(row.total_amount, row.currency || 'EUR') },
         { key: 'actions', label: 'Aktionen', render: (row) => `<button type="button" class="secondary reservation-edit" data-id="${row.id}">Bearbeiten</button>` },
     ], reservations);
+}
+
+function renderGuestsTable(guests) {
+    renderTable('guests-list', [
+        { key: 'last_name', label: 'Nachname' },
+        { key: 'first_name', label: 'Vorname' },
+        { key: 'company_name', label: 'Firma' },
+        { key: 'email', label: 'E-Mail' },
+        { key: 'phone', label: 'Telefon' },
+        { key: 'notes', label: 'Notizen' },
+        { key: 'actions', label: 'Aktionen', render: (row) => `<button type="button" class="secondary guest-edit" data-id="${row.id}">Bearbeiten</button>` },
+    ], guests);
+}
+
+function renderCompaniesTable(companies) {
+    renderTable('companies-list', [
+        { key: 'name', label: 'Name' },
+        { key: 'email', label: 'E-Mail' },
+        { key: 'phone', label: 'Telefon' },
+        { key: 'city', label: 'Stadt' },
+        { key: 'country', label: 'Land' },
+        { key: 'notes', label: 'Notizen' },
+        { key: 'actions', label: 'Aktionen', render: (row) => `<button type="button" class="secondary company-edit" data-id="${row.id}">Bearbeiten</button>` },
+    ], companies);
+}
+
+function resetGuestForm() {
+    if (!guestForm) {
+        return;
+    }
+    const wasOpen = guestDetails ? guestDetails.open : false;
+    guestForm.reset();
+    state.editingGuestId = null;
+    if (guestSubmitButton) {
+        guestSubmitButton.textContent = 'Gast speichern';
+    }
+    if (guestCancelButton) {
+        guestCancelButton.classList.add('hidden');
+    }
+    if (guestSummary) {
+        guestSummary.textContent = guestSummaryDefault;
+    }
+    populateCompanyDropdowns();
+    if (guestCompanySelect) {
+        guestCompanySelect.value = '';
+    }
+    if (guestDetails) {
+        guestDetails.open = wasOpen;
+    }
+}
+
+function startGuestEdit(guestId) {
+    if (!guestForm) {
+        return;
+    }
+    const guest = state.guests.find((entry) => Number(entry.id) === Number(guestId));
+    if (!guest) {
+        showMessage('Gast wurde nicht gefunden.', 'error');
+        return;
+    }
+    populateCompanyDropdowns();
+    guestForm.first_name.value = guest.first_name || '';
+    guestForm.last_name.value = guest.last_name || '';
+    guestForm.email.value = guest.email || '';
+    guestForm.phone.value = guest.phone || '';
+    guestForm.address.value = guest.address || '';
+    guestForm.city.value = guest.city || '';
+    guestForm.country.value = guest.country || '';
+    guestForm.notes.value = guest.notes || '';
+    if (guestCompanySelect) {
+        guestCompanySelect.value = guest.company_id ? String(guest.company_id) : '';
+    }
+    state.editingGuestId = Number(guest.id);
+    if (guestSubmitButton) {
+        guestSubmitButton.textContent = 'Gast aktualisieren';
+    }
+    if (guestCancelButton) {
+        guestCancelButton.classList.remove('hidden');
+    }
+    if (guestSummary) {
+        const label = [guest.last_name, guest.first_name].filter(Boolean).join(', ') || `ID ${guest.id}`;
+        guestSummary.textContent = `Gast bearbeiten (${label})`;
+    }
+    if (guestDetails) {
+        guestDetails.open = true;
+    }
+}
+
+function resetCompanyForm() {
+    if (!companyForm) {
+        return;
+    }
+    const wasOpen = companyDetails ? companyDetails.open : false;
+    companyForm.reset();
+    state.editingCompanyId = null;
+    if (companySubmitButton) {
+        companySubmitButton.textContent = 'Firma speichern';
+    }
+    if (companyCancelButton) {
+        companyCancelButton.classList.add('hidden');
+    }
+    if (companySummary) {
+        companySummary.textContent = companySummaryDefault;
+    }
+    if (companyDetails) {
+        companyDetails.open = wasOpen;
+    }
+}
+
+function startCompanyEdit(companyId) {
+    if (!companyForm) {
+        return;
+    }
+    const company = state.companies.find((entry) => Number(entry.id) === Number(companyId));
+    if (!company) {
+        showMessage('Firma wurde nicht gefunden.', 'error');
+        return;
+    }
+    companyForm.name.value = company.name || '';
+    companyForm.email.value = company.email || '';
+    companyForm.phone.value = company.phone || '';
+    companyForm.address.value = company.address || '';
+    companyForm.city.value = company.city || '';
+    companyForm.country.value = company.country || '';
+    companyForm.notes.value = company.notes || '';
+    state.editingCompanyId = Number(company.id);
+    if (companySubmitButton) {
+        companySubmitButton.textContent = 'Firma aktualisieren';
+    }
+    if (companyCancelButton) {
+        companyCancelButton.classList.remove('hidden');
+    }
+    if (companySummary) {
+        const label = company.name || `ID ${company.id}`;
+        companySummary.textContent = `Firma bearbeiten (${label})`;
+    }
+    if (companyDetails) {
+        companyDetails.open = true;
+    }
 }
 
 function renderOccupancyCalendar(rooms, reservations, startDateStr, days = CALENDAR_DAYS) {
@@ -627,18 +838,21 @@ async function bootstrap() {
         return;
     }
     try {
-        const [roomTypes, ratePlans, rooms, roles, guests] = await Promise.all([
+        const [roomTypes, ratePlans, rooms, roles, guests, companies] = await Promise.all([
             apiFetch('room-types'),
             apiFetch('rate-plans'),
             apiFetch('rooms'),
             apiFetch('roles'),
             apiFetch('guests'),
+            apiFetch('companies'),
         ]);
         state.roomTypes = roomTypes;
         state.ratePlans = ratePlans;
         state.rooms = rooms;
         state.roles = roles;
         state.guests = guests;
+        state.companies = companies;
+        state.companiesLoaded = true;
         populateRoomTypeSelects();
         populateRatePlanSelect();
         populateRoomOptions();
@@ -646,6 +860,9 @@ async function bootstrap() {
         populateRoomTypeList();
         populateRatePlanList();
         populateGuestSelect();
+        populateCompanyDropdowns();
+        renderGuestsTable(guests);
+        renderCompaniesTable(companies);
         resetReservationForm();
         state.loadedSections.clear();
         await Promise.all([
@@ -970,6 +1187,20 @@ async function loadUsers(force = false) {
     }
 }
 
+async function fetchCompanies(force = false) {
+    if (!state.token) {
+        return [];
+    }
+    if (!force && state.companiesLoaded) {
+        return state.companies;
+    }
+    const companies = await apiFetch('companies');
+    state.companies = companies;
+    state.companiesLoaded = true;
+    populateCompanyDropdowns();
+    return companies;
+}
+
 async function loadGuests(force = false) {
     if (!requireToken()) {
         return;
@@ -978,17 +1209,31 @@ async function loadGuests(force = false) {
         return;
     }
     try {
-        const guests = await apiFetch('guests');
+        const [guests] = await Promise.all([
+            apiFetch('guests'),
+            fetchCompanies(force),
+        ]);
         state.guests = guests;
         populateGuestSelect();
-        renderTable('guests-list', [
-            { key: 'first_name', label: 'Vorname' },
-            { key: 'last_name', label: 'Nachname' },
-            { key: 'email', label: 'E-Mail' },
-            { key: 'phone', label: 'Telefon' },
-            { key: 'notes', label: 'Notizen' },
-        ], guests);
+        populateCompanyDropdowns();
+        renderGuestsTable(guests);
         state.loadedSections.add('guests');
+    } catch (error) {
+        showMessage(error.message, 'error');
+    }
+}
+
+async function loadCompanies(force = false) {
+    if (!requireToken()) {
+        return;
+    }
+    if (!force && state.loadedSections.has('companies')) {
+        return;
+    }
+    try {
+        const companies = await fetchCompanies(force);
+        renderCompaniesTable(companies);
+        state.loadedSections.add('companies');
     } catch (error) {
         showMessage(error.message, 'error');
     }
@@ -1076,6 +1321,7 @@ const sectionLoaders = {
     billing: () => loadBilling(true),
     reports: () => loadReports(true),
     users: () => loadUsers(true),
+    companies: () => loadCompanies(true),
     guests: () => loadGuests(true),
     integrations: () => loadIntegrations(true),
 };
@@ -1129,6 +1375,9 @@ if (reservationForm) {
             email: reservationForm.guest_email.value || null,
             phone: reservationForm.guest_phone.value || null,
         };
+        if (reservationGuestCompanySelect) {
+            guestPayload.company_id = reservationGuestCompanySelect.value ? Number(reservationGuestCompanySelect.value) : null;
+        }
 
         const isEdit = Boolean(state.editingReservationId);
 
@@ -1193,6 +1442,7 @@ document.getElementById('reload-tasks').addEventListener('click', () => loadHous
 document.getElementById('reload-invoices').addEventListener('click', () => loadBilling(true));
 document.getElementById('reload-payments').addEventListener('click', () => loadBilling(true));
 document.getElementById('reload-users').addEventListener('click', () => loadUsers(true));
+document.getElementById('reload-companies').addEventListener('click', () => loadCompanies(true));
 document.getElementById('reload-guests').addEventListener('click', () => loadGuests(true));
 document.getElementById('reload-integrations').addEventListener('click', () => loadIntegrations(true));
 document.getElementById('refresh-dashboard').addEventListener('click', () => loadDashboard(true));
@@ -1432,34 +1682,110 @@ document.getElementById('role-form').addEventListener('submit', async (event) =>
     }
 });
 
-document.getElementById('guest-form').addEventListener('submit', async (event) => {
-    event.preventDefault();
-    if (!requireToken()) {
-        return;
-    }
-    const form = event.target;
-    const payload = {
-        first_name: form.first_name.value,
-        last_name: form.last_name.value,
-        email: form.email.value || null,
-        phone: form.phone.value || null,
-        address: form.address.value || null,
-        city: form.city.value || null,
-        country: form.country.value || null,
-        notes: form.notes.value || null,
-    };
-    try {
-        await apiFetch('guests', {
-            method: 'POST',
-            body: JSON.stringify(payload),
-        });
-        form.reset();
-        showMessage('Gast gespeichert.', 'success');
-        await loadGuests(true);
-    } catch (error) {
-        showMessage(error.message, 'error');
-    }
-});
+if (guestForm) {
+    guestForm.addEventListener('submit', async (event) => {
+        event.preventDefault();
+        if (!requireToken()) {
+            return;
+        }
+        const payload = {
+            first_name: guestForm.first_name.value,
+            last_name: guestForm.last_name.value,
+            email: guestForm.email.value || null,
+            phone: guestForm.phone.value || null,
+            address: guestForm.address.value || null,
+            city: guestForm.city.value || null,
+            country: guestForm.country.value || null,
+            notes: guestForm.notes.value || null,
+            company_id: guestCompanySelect && guestCompanySelect.value ? Number(guestCompanySelect.value) : null,
+        };
+        const isEdit = Boolean(state.editingGuestId);
+        const endpoint = isEdit ? `guests/${state.editingGuestId}` : 'guests';
+        const method = isEdit ? 'PATCH' : 'POST';
+        try {
+            await apiFetch(endpoint, {
+                method,
+                body: JSON.stringify(payload),
+            });
+            showMessage(isEdit ? 'Gast aktualisiert.' : 'Gast gespeichert.', 'success');
+            await loadGuests(true);
+            resetGuestForm();
+        } catch (error) {
+            showMessage(error.message, 'error');
+        }
+    });
+}
+
+if (guestCancelButton) {
+    guestCancelButton.addEventListener('click', () => resetGuestForm());
+}
+
+if (guestsList) {
+    guestsList.addEventListener('click', (event) => {
+        const button = event.target.closest('.guest-edit');
+        if (!button) {
+            return;
+        }
+        const guestId = Number(button.dataset.id);
+        if (!Number.isFinite(guestId)) {
+            return;
+        }
+        startGuestEdit(guestId);
+    });
+}
+
+if (companyForm) {
+    companyForm.addEventListener('submit', async (event) => {
+        event.preventDefault();
+        if (!requireToken()) {
+            return;
+        }
+        const payload = {
+            name: companyForm.name.value,
+            email: companyForm.email.value || null,
+            phone: companyForm.phone.value || null,
+            address: companyForm.address.value || null,
+            city: companyForm.city.value || null,
+            country: companyForm.country.value || null,
+            notes: companyForm.notes.value || null,
+        };
+        const isEdit = Boolean(state.editingCompanyId);
+        const endpoint = isEdit ? `companies/${state.editingCompanyId}` : 'companies';
+        const method = isEdit ? 'PATCH' : 'POST';
+        try {
+            await apiFetch(endpoint, {
+                method,
+                body: JSON.stringify(payload),
+            });
+            showMessage(isEdit ? 'Firma aktualisiert.' : 'Firma gespeichert.', 'success');
+            await Promise.all([
+                loadCompanies(true),
+                loadGuests(true),
+            ]);
+            resetCompanyForm();
+        } catch (error) {
+            showMessage(error.message, 'error');
+        }
+    });
+}
+
+if (companyCancelButton) {
+    companyCancelButton.addEventListener('click', () => resetCompanyForm());
+}
+
+if (companiesList) {
+    companiesList.addEventListener('click', (event) => {
+        const button = event.target.closest('.company-edit');
+        if (!button) {
+            return;
+        }
+        const companyId = Number(button.dataset.id);
+        if (!Number.isFinite(companyId)) {
+            return;
+        }
+        startCompanyEdit(companyId);
+    });
+}
 
 document.getElementById('guest-lookup').addEventListener('submit', async (event) => {
     event.preventDefault();

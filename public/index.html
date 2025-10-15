@@ -28,6 +28,7 @@
     <button type="button" data-section="billing">Fakturierung</button>
     <button type="button" data-section="reports">Berichte</button>
     <button type="button" data-section="users">Benutzer</button>
+    <button type="button" data-section="companies">Firmen</button>
     <button type="button" data-section="guests">Gäste</button>
     <button type="button" data-section="integrations">Integrationen</button>
     <button type="button" data-section="guest-portal">Gästeportal</button>
@@ -116,6 +117,11 @@
                     </label>
                     <label>Telefon
                         <input type="tel" name="guest_phone">
+                    </label>
+                    <label>Firma
+                        <select name="guest_company">
+                            <option value="">Keine Firma</option>
+                        </select>
                     </label>
                 </fieldset>
                 <fieldset>
@@ -387,6 +393,44 @@
         </div>
     </section>
 
+    <section id="companies" data-section>
+        <div class="section-header">
+            <h2>Firmen</h2>
+            <button type="button" id="reload-companies" class="secondary">Neu laden</button>
+        </div>
+        <div id="companies-list" class="table-wrapper"></div>
+        <details class="form-panel">
+            <summary>Firma anlegen</summary>
+            <form id="company-form" class="grid-form">
+                <label>Firmenname
+                    <input type="text" name="name" required>
+                </label>
+                <label>E-Mail
+                    <input type="email" name="email">
+                </label>
+                <label>Telefon
+                    <input type="tel" name="phone">
+                </label>
+                <label>Adresse
+                    <input type="text" name="address">
+                </label>
+                <label>Stadt
+                    <input type="text" name="city">
+                </label>
+                <label>Land
+                    <input type="text" name="country">
+                </label>
+                <label>Notizen
+                    <textarea name="notes" rows="3"></textarea>
+                </label>
+                <div class="form-actions">
+                    <button type="submit">Firma speichern</button>
+                    <button type="button" id="company-cancel-edit" class="secondary hidden">Abbrechen</button>
+                </div>
+            </form>
+        </details>
+    </section>
+
     <section id="guests" data-section>
         <div class="section-header">
             <h2>Gäste</h2>
@@ -417,10 +461,18 @@
                 <label>Land
                     <input type="text" name="country">
                 </label>
+                <label>Firma
+                    <select name="company_id">
+                        <option value="">Keine Firma</option>
+                    </select>
+                </label>
                 <label>Notizen
                     <textarea name="notes" rows="3"></textarea>
                 </label>
-                <button type="submit">Gast speichern</button>
+                <div class="form-actions">
+                    <button type="submit">Gast speichern</button>
+                    <button type="button" id="guest-cancel-edit" class="secondary hidden">Abbrechen</button>
+                </div>
             </form>
         </details>
     </section>

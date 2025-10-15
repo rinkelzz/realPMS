@@ -32,13 +32,15 @@ if ($resource === '') {
         'resources' => [
             'room-types',
             'rate-plans',
-            'rooms',
-            'reservations',
-            'housekeeping/tasks',
-            'invoices',
-            'payments',
-            'reports',
-            'users',
+        'rooms',
+        'reservations',
+        'guests',
+        'companies',
+        'housekeeping/tasks',
+        'invoices',
+        'payments',
+        'reports',
+        'users',
             'roles',
             'permissions',
             'integrations',
@@ -67,6 +69,9 @@ switch ($resource) {
         break;
     case 'guests':
         handleGuests($method, $segments);
+        break;
+    case 'companies':
+        handleCompanies($method, $segments);
         break;
     case 'housekeeping':
         handleHousekeeping($method, $segments);
@@ -329,7 +334,7 @@ function handleGuests(string $method, array $segments): void
 
     if ($method === 'GET') {
         if ($id !== null) {
-            $stmt = $pdo->prepare('SELECT * FROM guests WHERE id = :id');
+            $stmt = $pdo->prepare('SELECT g.*, c.name AS company_name FROM guests g LEFT JOIN companies c ON c.id = g.company_id WHERE g.id = :id');
             $stmt->execute(['id' => $id]);
             $guest = $stmt->fetch();
             if (!$guest) {
@@ -338,13 +343,13 @@ function handleGuests(string $method, array $segments): void
             jsonResponse($guest);
         }
 
-        $query = 'SELECT * FROM guests';
+        $query = 'SELECT g.*, c.name AS company_name FROM guests g LEFT JOIN companies c ON c.id = g.company_id';
         $params = [];
         if (isset($_GET['search']) && $_GET['search'] !== '') {
-            $query .= ' WHERE CONCAT(first_name, " ", last_name) LIKE :search OR email LIKE :search';
+            $query .= ' WHERE CONCAT(g.first_name, " ", g.last_name) LIKE :search OR g.email LIKE :search';
             $params['search'] = '%' . $_GET['search'] . '%';
         }
-        $query .= ' ORDER BY last_name, first_name';
+        $query .= ' ORDER BY g.last_name, g.first_name';
         $stmt = $pdo->prepare($query);
         $stmt->execute($params);
         jsonResponse($stmt->fetchAll());
@@ -358,7 +363,9 @@ function handleGuests(string $method, array $segments): void
             }
         }
 
-        $stmt = $pdo->prepare('INSERT INTO guests (first_name, last_name, email, phone, address, city, country, notes, created_at, updated_at) VALUES (:first_name, :last_name, :email, :phone, :address, :city, :country, :notes, :created_at, :updated_at)');
+        $companyId = normalizeCompanyId($pdo, $data['company_id'] ?? null);
+
+        $stmt = $pdo->prepare('INSERT INTO guests (first_name, last_name, email, phone, address, city, country, company_id, notes, created_at, updated_at) VALUES (:first_name, :last_name, :email, :phone, :address, :city, :country, :company_id, :notes, :created_at, :updated_at)');
         $stmt->execute([
             'first_name' => $data['first_name'],
             'last_name' => $data['last_name'],
@@ -367,6 +374,7 @@ function handleGuests(string $method, array $segments): void
             'address' => $data['address'] ?? null,
             'city' => $data['city'] ?? null,
             'country' => $data['country'] ?? null,
+            'company_id' => $companyId,
             'notes' => $data['notes'] ?? null,
             'created_at' => now(),
             'updated_at' => now(),
@@ -377,13 +385,17 @@ function handleGuests(string $method, array $segments): void
 
     if (($method === 'PUT' || $method === 'PATCH') && $id !== null) {
         $data = parseJsonBody();
-        $fields = ['first_name', 'last_name', 'email', 'phone', 'address', 'city', 'country', 'notes'];
+        $fields = ['first_name', 'last_name', 'email', 'phone', 'address', 'city', 'country', 'company_id', 'notes'];
         $updates = [];
         $params = ['id' => $id];
         foreach ($fields as $field) {
             if (array_key_exists($field, $data)) {
+                if ($field === 'company_id') {
+                    $params[$field] = normalizeCompanyId($pdo, $data[$field]);
+                } else {
+                    $params[$field] = $data[$field];
+                }
                 $updates[] = sprintf('%s = :%s', $field, $field);
-                $params[$field] = $data[$field];
             }
         }
         if (!$updates) {
@@ -399,6 +411,83 @@ function handleGuests(string $method, array $segments): void
     jsonResponse(['error' => 'Unsupported method.'], 405);
 }
 
+function handleCompanies(string $method, array $segments): void
+{
+    $pdo = db();
+    $id = $segments[1] ?? null;
+
+    if ($method === 'GET') {
+        if ($id !== null) {
+            $stmt = $pdo->prepare('SELECT * FROM companies WHERE id = :id');
+            $stmt->execute(['id' => $id]);
+            $company = $stmt->fetch();
+            if (!$company) {
+                jsonResponse(['error' => 'Company not found.'], 404);
+            }
+            jsonResponse($company);
+        }
+
+        $query = 'SELECT * FROM companies';
+        $params = [];
+        if (isset($_GET['search']) && $_GET['search'] !== '') {
+            $query .= ' WHERE name LIKE :search OR email LIKE :search';
+            $params['search'] = '%' . $_GET['search'] . '%';
+        }
+        $query .= ' ORDER BY name';
+        $stmt = $pdo->prepare($query);
+        $stmt->execute($params);
+        jsonResponse($stmt->fetchAll());
+    }
+
+    if ($method === 'POST' && $id === null) {
+        $data = parseJsonBody();
+        if (empty($data['name'])) {
+            jsonResponse(['error' => 'Name is required.'], 422);
+        }
+
+        $stmt = $pdo->prepare('INSERT INTO companies (name, email, phone, address, city, country, notes, created_at, updated_at) VALUES (:name, :email, :phone, :address, :city, :country, :notes, :created_at, :updated_at)');
+        $stmt->execute([
+            'name' => $data['name'],
+            'email' => $data['email'] ?? null,
+            'phone' => $data['phone'] ?? null,
+            'address' => $data['address'] ?? null,
+            'city' => $data['city'] ?? null,
+            'country' => $data['country'] ?? null,
+            'notes' => $data['notes'] ?? null,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        jsonResponse(['id' => $pdo->lastInsertId()], 201);
+    }
+
+    if (($method === 'PUT' || $method === 'PATCH') && $id !== null) {
+        $data = parseJsonBody();
+        $fields = ['name', 'email', 'phone', 'address', 'city', 'country', 'notes'];
+        $updates = [];
+        $params = ['id' => $id];
+        foreach ($fields as $field) {
+            if (array_key_exists($field, $data)) {
+                if ($field === 'name' && empty($data[$field])) {
+                    jsonResponse(['error' => 'Name is required.'], 422);
+                }
+                $updates[] = sprintf('%s = :%s', $field, $field);
+                $params[$field] = $data[$field];
+            }
+        }
+        if (!$updates) {
+            jsonResponse(['error' => 'No changes supplied.'], 422);
+        }
+        $updates[] = 'updated_at = :updated_at';
+        $params['updated_at'] = now();
+        $stmt = $pdo->prepare(sprintf('UPDATE companies SET %s WHERE id = :id', implode(', ', $updates)));
+        $stmt->execute($params);
+        jsonResponse(['updated' => true]);
+    }
+
+    jsonResponse(['error' => 'Unsupported method.'], 405);
+}
+
 function handleReservations(string $method, array $segments): void
 {
     $pdo = db();
@@ -406,7 +495,7 @@ function handleReservations(string $method, array $segments): void
 
     if ($method === 'GET') {
         if ($id !== null) {
-            $stmt = $pdo->prepare('SELECT r.*, g.first_name, g.last_name, g.email, g.phone FROM reservations r JOIN guests g ON g.id = r.guest_id WHERE r.id = :id');
+            $stmt = $pdo->prepare('SELECT r.*, g.first_name, g.last_name, g.email, g.phone, g.company_id, c.name AS company_name FROM reservations r JOIN guests g ON g.id = r.guest_id LEFT JOIN companies c ON c.id = g.company_id WHERE r.id = :id');
             $stmt->execute(['id' => $id]);
             $reservation = $stmt->fetch();
             if (!$reservation) {
@@ -420,7 +509,7 @@ function handleReservations(string $method, array $segments): void
 
         $conditions = [];
         $params = [];
-        $query = 'SELECT r.*, g.first_name, g.last_name FROM reservations r JOIN guests g ON g.id = r.guest_id';
+        $query = 'SELECT r.*, g.first_name, g.last_name, g.company_id, c.name AS company_name FROM reservations r JOIN guests g ON g.id = r.guest_id LEFT JOIN companies c ON c.id = g.company_id';
         if (isset($_GET['status'])) {
             $conditions[] = 'r.status = :status';
             $params['status'] = $_GET['status'];
@@ -578,13 +667,17 @@ function handleReservations(string $method, array $segments): void
             }
 
             if (isset($data['guest']) && is_array($data['guest'])) {
-                $guestFields = ['first_name', 'last_name', 'email', 'phone', 'address', 'city', 'country', 'notes'];
+                $guestFields = ['first_name', 'last_name', 'email', 'phone', 'address', 'city', 'country', 'company_id', 'notes'];
                 $guestUpdates = [];
                 $guestParams = ['id' => $targetGuestId];
                 foreach ($guestFields as $field) {
                     if (array_key_exists($field, $data['guest'])) {
                         $guestUpdates[] = sprintf('%s = :%s', $field, $field);
-                        $guestParams[$field] = $data['guest'][$field];
+                        if ($field === 'company_id') {
+                            $guestParams[$field] = normalizeCompanyId($pdo, $data['guest'][$field]);
+                        } else {
+                            $guestParams[$field] = $data['guest'][$field];
+                        }
                     }
                 }
                 if ($guestUpdates) {
@@ -804,7 +897,9 @@ function ensureRoomCapacity(PDO $pdo, array $roomIds, int $guestCount): void
 
 function createGuest(PDO $pdo, array $guest): int
 {
-    $stmt = $pdo->prepare('INSERT INTO guests (first_name, last_name, email, phone, address, city, country, notes, created_at, updated_at) VALUES (:first_name, :last_name, :email, :phone, :address, :city, :country, :notes, :created_at, :updated_at)');
+    $companyId = normalizeCompanyId($pdo, $guest['company_id'] ?? null);
+
+    $stmt = $pdo->prepare('INSERT INTO guests (first_name, last_name, email, phone, address, city, country, company_id, notes, created_at, updated_at) VALUES (:first_name, :last_name, :email, :phone, :address, :city, :country, :company_id, :notes, :created_at, :updated_at)');
     $stmt->execute([
         'first_name' => $guest['first_name'],
         'last_name' => $guest['last_name'],
@@ -813,12 +908,46 @@ function createGuest(PDO $pdo, array $guest): int
         'address' => $guest['address'] ?? null,
         'city' => $guest['city'] ?? null,
         'country' => $guest['country'] ?? null,
+        'company_id' => $companyId,
         'notes' => $guest['notes'] ?? null,
         'created_at' => now(),
         'updated_at' => now(),
     ]);
 
     return (int) $pdo->lastInsertId();
+}
+
+function normalizeCompanyId(PDO $pdo, mixed $value): ?int
+{
+    if ($value === null) {
+        return null;
+    }
+
+    if (is_string($value)) {
+        $trimmed = trim($value);
+        if ($trimmed === '') {
+            return null;
+        }
+        $value = $trimmed;
+    }
+
+    $companyId = (int) $value;
+    if ($companyId <= 0) {
+        jsonResponse(['error' => 'company_id must reference an existing company.'], 422);
+    }
+
+    ensureCompanyExists($pdo, $companyId);
+
+    return $companyId;
+}
+
+function ensureCompanyExists(PDO $pdo, int $companyId): void
+{
+    $stmt = $pdo->prepare('SELECT id FROM companies WHERE id = :id');
+    $stmt->execute(['id' => $companyId]);
+    if ($stmt->fetchColumn() === false) {
+        jsonResponse(['error' => 'company_id must reference an existing company.'], 422);
+    }
 }
 
 function assignRoomsToReservation(PDO $pdo, int $reservationId, array $rooms, string $checkIn, string $checkOut, int $guestCount, ?int $ignoreReservationId = null): void
@@ -1451,7 +1580,7 @@ function handleGuestPortal(string $method, array $segments): void
     }
 
     $pdo = db();
-    $stmt = $pdo->prepare('SELECT r.*, g.first_name, g.last_name, g.email FROM reservations r JOIN guests g ON g.id = r.guest_id WHERE r.confirmation_number = :confirmation');
+    $stmt = $pdo->prepare('SELECT r.*, g.first_name, g.last_name, g.email, g.company_id, c.name AS company_name FROM reservations r JOIN guests g ON g.id = r.guest_id LEFT JOIN companies c ON c.id = g.company_id WHERE r.confirmation_number = :confirmation');
     $stmt->execute(['confirmation' => $confirmation]);
     $reservation = $stmt->fetch();
     if (!$reservation) {

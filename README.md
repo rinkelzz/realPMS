@@ -48,13 +48,14 @@ Für ein automatisiertes Update des aktuell ausgecheckten Branches steht `backen
 
 Neben der reinen API steht jetzt ein leichtgewichtiger Administrations-Client zur Verfügung:
 
-- `public/index.html` bildet ein Single-Page-Dashboard für Reservierungen, Zimmer, Housekeeping, Fakturierung, Berichte, Nutzer und Gäste.
+- `public/index.html` bildet ein Single-Page-Dashboard für Reservierungen, Zimmer, Housekeeping, Fakturierung, Berichte, Nutzer, Firmen und Gäste.
 - Hinterlege den API-Token im Kopfbereich der Anwendung – er wird im Browser-Storage gespeichert.
 - Starte die Oberfläche lokal zum Beispiel mit
   ```bash
   php -S 0.0.0.0:8080 -t public
   ```
   und rufe anschließend `http://localhost:8080/` im Browser auf. Die API muss parallel (z. B. über Apache/Nginx oder einen zweiten PHP-Built-in-Server) erreichbar sein.
+- Im Bereich „Firmen“ legst du Unternehmensprofile an und bearbeitest sie; Gäste können direkt im Gästebereich einer Firma zugeordnet oder dort editiert werden.
 
 ## REST API für den MVP-Funktionsumfang
 
@@ -77,7 +78,8 @@ Nach dem erfolgreichen Datenbank-Setup stellt `backend/api/index.php` eine schla
   ```
 - `POST /backend/api/reservations/{id}/check-in` bzw. `/check-out` – Walk-in/Walk-out inkl. automatischem Status-Log und Zimmerstatus.
 - `POST /backend/api/reservations/{id}/documents` – Hinterlegt Meldescheine oder andere Dateien (es werden Metadaten gespeichert, die Dateiablage erfolgt extern).
-- `GET|POST|PATCH /backend/api/guests` – Verwalten von Gästestammdaten inklusive optionaler Suchfunktion via `?search=`.
+- `GET|POST|PATCH /backend/api/guests` – Verwalten von Gästestammdaten inklusive Firmenzuordnung und optionaler Suchfunktion via `?search=`.
+- `GET|POST|PATCH /backend/api/companies` – Firmenstammdaten für Reisebüros, Unternehmen oder Agenturen; Gäste lassen sich diesen Einträgen zuweisen.
 
 ### Housekeeping & Maintenance
 - `GET /backend/api/rooms?status=in_cleaning` – Filterbare Raumliste inkl. Raumtyp.
