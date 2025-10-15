@@ -1,0 +1,1867 @@
+<?php
+
+declare(strict_types=1);
+
+require __DIR__ . '/../bootstrap.php';
+
+const RESERVATION_STATUSES = [
+    'tentative',
+    'confirmed',
+    'checked_in',
+    'paid',
+    'checked_out',
+    'cancelled',
+    'no_show',
+];
+
+const CALENDAR_COLOR_STATUSES = [
+    'tentative',
+    'confirmed',
+    'checked_in',
+    'paid',
+    'checked_out',
+    'cancelled',
+    'no_show',
+];
+
+const DEFAULT_CALENDAR_COLORS = [
+    'tentative' => '#f97316',
+    'confirmed' => '#2563eb',
+    'checked_in' => '#16a34a',
+    'paid' => '#0ea5e9',
+    'checked_out' => '#6b7280',
+    'cancelled' => '#ef4444',
+    'no_show' => '#7c3aed',
+];
+
+$method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
+$uri = $_SERVER['REQUEST_URI'] ?? '/';
+$pathInfo = $_SERVER['PATH_INFO'] ?? '';
+if ($pathInfo !== '') {
+    $path = trim($pathInfo, '/');
+} else {
+    $path = parse_url($uri, PHP_URL_PATH) ?? '/';
+    $path = trim($path, '/');
+    $scriptName = trim($_SERVER['SCRIPT_NAME'] ?? '', '/');
+    if ($scriptName !== '' && str_starts_with($path, $scriptName)) {
+        $path = trim(substr($path, strlen($scriptName)), '/');
+    } else {
+        $scriptDir = trim(dirname($_SERVER['SCRIPT_NAME'] ?? ''), '/');
+        if ($scriptDir !== '' && str_starts_with($path, $scriptDir)) {
+            $path = trim(substr($path, strlen($scriptDir)), '/');
+        }
+    }
+}
+$segments = $path === '' ? [] : explode('/', $path);
+$resource = $segments[0] ?? '';
+
+if ($resource === '') {
+    jsonResponse([
+        'name' => 'realPMS Prototype API',
+        'version' => '0.1.0',
+        'resources' => [
+            'room-types',
+            'rate-plans',
+            'rooms',
+            'reservations',
+            'guests',
+            'companies',
+            'housekeeping/tasks',
+            'invoices',
+            'payments',
+            'reports',
+            'users',
+            'roles',
+            'permissions',
+            'integrations',
+            'guest-portal',
+            'settings',
+        ],
+    ]);
+}
+
+$publicResources = ['guest-portal'];
+if (!in_array($resource, $publicResources, true)) {
+    requireApiKey();
+}
+
+switch ($resource) {
+    case 'room-types':
+        handleRoomTypes($method, $segments);
+        break;
+    case 'rate-plans':
+        handleRatePlans($method, $segments);
+        break;
+    case 'rooms':
+        handleRooms($method, $segments);
+        break;
+    case 'reservations':
+        handleReservations($method, $segments);
+        break;
+    case 'guests':
+        handleGuests($method, $segments);
+        break;
+    case 'companies':
+        handleCompanies($method, $segments);
+        break;
+    case 'housekeeping':
+        handleHousekeeping($method, $segments);
+        break;
+    case 'invoices':
+        handleInvoices($method, $segments);
+        break;
+    case 'payments':
+        handlePayments($method, $segments);
+        break;
+    case 'reports':
+        handleReports($method, $segments);
+        break;
+    case 'users':
+        handleUsers($method, $segments);
+        break;
+    case 'roles':
+        handleRoles($method, $segments);
+        break;
+    case 'permissions':
+        handlePermissions($method, $segments);
+        break;
+    case 'integrations':
+        handleIntegrations($method, $segments);
+        break;
+    case 'guest-portal':
+        handleGuestPortal($method, $segments);
+        break;
+    case 'settings':
+        handleSettings($method, $segments);
+        break;
+    default:
+        jsonResponse(['error' => 'Resource not found.'], 404);
+}
+
+function handleRoomTypes(string $method, array $segments): void
+{
+    $pdo = db();
+    $id = $segments[1] ?? null;
+
+    if ($method === 'GET') {
+        if ($id !== null) {
+            $stmt = $pdo->prepare('SELECT * FROM room_types WHERE id = :id');
+            $stmt->execute(['id' => $id]);
+            $type = $stmt->fetch();
+            if (!$type) {
+                jsonResponse(['error' => 'Room type not found.'], 404);
+            }
+            jsonResponse($type);
+        }
+
+        $stmt = $pdo->query('SELECT * FROM room_types ORDER BY name');
+        jsonResponse($stmt->fetchAll());
+    }
+
+    if ($method === 'POST') {
+        $data = parseJsonBody();
+        if (empty($data['name'])) {
+            jsonResponse(['error' => 'Name is required.'], 422);
+        }
+
+        $stmt = $pdo->prepare('INSERT INTO room_types (name, description, base_occupancy, max_occupancy, base_rate, currency, created_at, updated_at) VALUES (:name, :description, :base_occupancy, :max_occupancy, :base_rate, :currency, :created_at, :updated_at)');
+        $stmt->execute([
+            'name' => $data['name'],
+            'description' => $data['description'] ?? null,
+            'base_occupancy' => $data['base_occupancy'] ?? 1,
+            'max_occupancy' => $data['max_occupancy'] ?? ($data['base_occupancy'] ?? 1),
+            'base_rate' => $data['base_rate'] ?? null,
+            'currency' => $data['currency'] ?? 'EUR',
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        jsonResponse(['id' => $pdo->lastInsertId()], 201);
+    }
+
+    if (($method === 'PUT' || $method === 'PATCH') && $id !== null) {
+        $data = parseJsonBody();
+        $fields = ['name', 'description', 'base_occupancy', 'max_occupancy', 'base_rate', 'currency'];
+        $updates = [];
+        $params = ['id' => $id];
+        foreach ($fields as $field) {
+            if (array_key_exists($field, $data)) {
+                $updates[] = sprintf('%s = :%s', $field, $field);
+                $params[$field] = $data[$field];
+            }
+        }
+
+        if (!$updates) {
+            jsonResponse(['error' => 'No changes supplied.'], 422);
+        }
+
+        $updates[] = 'updated_at = :updated_at';
+        $params['updated_at'] = now();
+
+        $stmt = $pdo->prepare(sprintf('UPDATE room_types SET %s WHERE id = :id', implode(', ', $updates)));
+        $stmt->execute($params);
+        jsonResponse(['updated' => true]);
+    }
+
+    jsonResponse(['error' => 'Unsupported method.'], 405);
+}
+
+function handleRatePlans(string $method, array $segments): void
+{
+    $pdo = db();
+    $id = $segments[1] ?? null;
+
+    if ($method === 'GET') {
+        if ($id !== null) {
+            $stmt = $pdo->prepare('SELECT * FROM rate_plans WHERE id = :id');
+            $stmt->execute(['id' => $id]);
+            $plan = $stmt->fetch();
+            if (!$plan) {
+                jsonResponse(['error' => 'Rate plan not found.'], 404);
+            }
+            jsonResponse($plan);
+        }
+
+        $stmt = $pdo->query('SELECT * FROM rate_plans ORDER BY name');
+        jsonResponse($stmt->fetchAll());
+    }
+
+    if ($method === 'POST') {
+        $data = parseJsonBody();
+        if (empty($data['name'])) {
+            jsonResponse(['error' => 'Name is required.'], 422);
+        }
+
+        $stmt = $pdo->prepare('INSERT INTO rate_plans (name, description, base_price, currency, cancellation_policy, created_at, updated_at) VALUES (:name, :description, :base_price, :currency, :cancellation_policy, :created_at, :updated_at)');
+        $stmt->execute([
+            'name' => $data['name'],
+            'description' => $data['description'] ?? null,
+            'base_price' => $data['base_price'] ?? 0,
+            'currency' => $data['currency'] ?? 'EUR',
+            'cancellation_policy' => $data['cancellation_policy'] ?? null,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        jsonResponse(['id' => $pdo->lastInsertId()], 201);
+    }
+
+    if (($method === 'PUT' || $method === 'PATCH') && $id !== null) {
+        $data = parseJsonBody();
+        $fields = ['name', 'description', 'base_price', 'currency', 'cancellation_policy'];
+        $updates = [];
+        $params = ['id' => $id];
+        foreach ($fields as $field) {
+            if (array_key_exists($field, $data)) {
+                $updates[] = sprintf('%s = :%s', $field, $field);
+                $params[$field] = $data[$field];
+            }
+        }
+
+        if (!$updates) {
+            jsonResponse(['error' => 'No changes supplied.'], 422);
+        }
+
+        $updates[] = 'updated_at = :updated_at';
+        $params['updated_at'] = now();
+
+        $stmt = $pdo->prepare(sprintf('UPDATE rate_plans SET %s WHERE id = :id', implode(', ', $updates)));
+        $stmt->execute($params);
+        jsonResponse(['updated' => true]);
+    }
+
+    jsonResponse(['error' => 'Unsupported method.'], 405);
+}
+
+function handleRooms(string $method, array $segments): void
+{
+    $pdo = db();
+    $id = $segments[1] ?? null;
+
+    if ($method === 'GET') {
+        if ($id !== null) {
+            $stmt = $pdo->prepare('SELECT rooms.*, room_types.name AS room_type_name, room_types.base_occupancy, room_types.max_occupancy FROM rooms JOIN room_types ON rooms.room_type_id = room_types.id WHERE rooms.id = :id');
+            $stmt->execute(['id' => $id]);
+            $room = $stmt->fetch();
+            if (!$room) {
+                jsonResponse(['error' => 'Room not found.'], 404);
+            }
+            jsonResponse($room);
+        }
+
+        $query = 'SELECT rooms.*, room_types.name AS room_type_name, room_types.base_occupancy, room_types.max_occupancy FROM rooms JOIN room_types ON rooms.room_type_id = room_types.id';
+        $conditions = [];
+        $params = [];
+        if (isset($_GET['status'])) {
+            $conditions[] = 'rooms.status = :status';
+            $params['status'] = $_GET['status'];
+        }
+        if (isset($_GET['room_type_id'])) {
+            $conditions[] = 'rooms.room_type_id = :room_type_id';
+            $params['room_type_id'] = $_GET['room_type_id'];
+        }
+        if ($conditions) {
+            $query .= ' WHERE ' . implode(' AND ', $conditions);
+        }
+        $query .= ' ORDER BY rooms.room_number';
+
+        $stmt = $pdo->prepare($query);
+        $stmt->execute($params);
+        jsonResponse($stmt->fetchAll());
+    }
+
+    if ($method === 'POST') {
+        $data = parseJsonBody();
+        if (empty($data['room_number']) || empty($data['room_type_id'])) {
+            jsonResponse(['error' => 'room_number and room_type_id are required.'], 422);
+        }
+
+        $stmt = $pdo->prepare('INSERT INTO rooms (room_number, room_type_id, floor, status, notes, created_at, updated_at) VALUES (:room_number, :room_type_id, :floor, :status, :notes, :created_at, :updated_at)');
+        $stmt->execute([
+            'room_number' => $data['room_number'],
+            'room_type_id' => $data['room_type_id'],
+            'floor' => $data['floor'] ?? null,
+            'status' => $data['status'] ?? 'available',
+            'notes' => $data['notes'] ?? null,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        jsonResponse(['id' => $pdo->lastInsertId()], 201);
+    }
+
+    if (($method === 'PUT' || $method === 'PATCH') && $id !== null) {
+        $data = parseJsonBody();
+        $fields = ['room_number', 'room_type_id', 'floor', 'status', 'notes'];
+        $updates = [];
+        $params = ['id' => $id];
+        foreach ($fields as $field) {
+            if (array_key_exists($field, $data)) {
+                $updates[] = sprintf('%s = :%s', $field, $field);
+                $params[$field] = $data[$field];
+            }
+        }
+
+        if (!$updates) {
+            jsonResponse(['error' => 'No changes supplied.'], 422);
+        }
+
+        if (isset($data['status'])) {
+            logHousekeepingStatus((int) $id, $data['status'], $data['notes'] ?? null, $data['recorded_by'] ?? null);
+        }
+
+        $updates[] = 'updated_at = :updated_at';
+        $params['updated_at'] = now();
+
+        $stmt = $pdo->prepare(sprintf('UPDATE rooms SET %s WHERE id = :id', implode(', ', $updates)));
+        $stmt->execute($params);
+        jsonResponse(['updated' => true]);
+    }
+
+    jsonResponse(['error' => 'Unsupported method.'], 405);
+}
+
+function handleGuests(string $method, array $segments): void
+{
+    $pdo = db();
+    $id = $segments[1] ?? null;
+
+    if ($method === 'GET') {
+        if ($id !== null) {
+            $stmt = $pdo->prepare('SELECT g.*, c.name AS company_name FROM guests g LEFT JOIN companies c ON c.id = g.company_id WHERE g.id = :id');
+            $stmt->execute(['id' => $id]);
+            $guest = $stmt->fetch();
+            if (!$guest) {
+                jsonResponse(['error' => 'Guest not found.'], 404);
+            }
+            jsonResponse($guest);
+        }
+
+        $query = 'SELECT g.*, c.name AS company_name FROM guests g LEFT JOIN companies c ON c.id = g.company_id';
+        $params = [];
+        if (isset($_GET['search']) && $_GET['search'] !== '') {
+            $query .= ' WHERE CONCAT(g.first_name, " ", g.last_name) LIKE :search OR g.email LIKE :search';
+            $params['search'] = '%' . $_GET['search'] . '%';
+        }
+        $query .= ' ORDER BY g.last_name, g.first_name';
+        $stmt = $pdo->prepare($query);
+        $stmt->execute($params);
+        jsonResponse($stmt->fetchAll());
+    }
+
+    if ($method === 'POST' && $id === null) {
+        $data = parseJsonBody();
+        foreach (['first_name', 'last_name'] as $field) {
+            if (empty($data[$field])) {
+                jsonResponse(['error' => sprintf('%s is required.', $field)], 422);
+            }
+        }
+
+        $companyId = normalizeCompanyId($pdo, $data['company_id'] ?? null);
+
+        $stmt = $pdo->prepare('INSERT INTO guests (first_name, last_name, email, phone, address, city, country, company_id, notes, created_at, updated_at) VALUES (:first_name, :last_name, :email, :phone, :address, :city, :country, :company_id, :notes, :created_at, :updated_at)');
+        $stmt->execute([
+            'first_name' => $data['first_name'],
+            'last_name' => $data['last_name'],
+            'email' => $data['email'] ?? null,
+            'phone' => $data['phone'] ?? null,
+            'address' => $data['address'] ?? null,
+            'city' => $data['city'] ?? null,
+            'country' => $data['country'] ?? null,
+            'company_id' => $companyId,
+            'notes' => $data['notes'] ?? null,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        jsonResponse(['id' => $pdo->lastInsertId()], 201);
+    }
+
+    if (($method === 'PUT' || $method === 'PATCH') && $id !== null) {
+        $data = parseJsonBody();
+        $fields = ['first_name', 'last_name', 'email', 'phone', 'address', 'city', 'country', 'company_id', 'notes'];
+        $updates = [];
+        $params = ['id' => $id];
+        foreach ($fields as $field) {
+            if (array_key_exists($field, $data)) {
+                if ($field === 'company_id') {
+                    $params[$field] = normalizeCompanyId($pdo, $data[$field]);
+                } else {
+                    $params[$field] = $data[$field];
+                }
+                $updates[] = sprintf('%s = :%s', $field, $field);
+            }
+        }
+        if (!$updates) {
+            jsonResponse(['error' => 'No changes supplied.'], 422);
+        }
+        $updates[] = 'updated_at = :updated_at';
+        $params['updated_at'] = now();
+        $stmt = $pdo->prepare(sprintf('UPDATE guests SET %s WHERE id = :id', implode(', ', $updates)));
+        $stmt->execute($params);
+        jsonResponse(['updated' => true]);
+    }
+
+    jsonResponse(['error' => 'Unsupported method.'], 405);
+}
+
+function handleCompanies(string $method, array $segments): void
+{
+    $pdo = db();
+    $id = $segments[1] ?? null;
+
+    if ($method === 'GET') {
+        if ($id !== null) {
+            $stmt = $pdo->prepare('SELECT * FROM companies WHERE id = :id');
+            $stmt->execute(['id' => $id]);
+            $company = $stmt->fetch();
+            if (!$company) {
+                jsonResponse(['error' => 'Company not found.'], 404);
+            }
+            jsonResponse($company);
+        }
+
+        $query = 'SELECT * FROM companies';
+        $params = [];
+        if (isset($_GET['search']) && $_GET['search'] !== '') {
+            $query .= ' WHERE name LIKE :search OR email LIKE :search';
+            $params['search'] = '%' . $_GET['search'] . '%';
+        }
+        $query .= ' ORDER BY name';
+        $stmt = $pdo->prepare($query);
+        $stmt->execute($params);
+        jsonResponse($stmt->fetchAll());
+    }
+
+    if ($method === 'POST' && $id === null) {
+        $data = parseJsonBody();
+        if (empty($data['name'])) {
+            jsonResponse(['error' => 'Name is required.'], 422);
+        }
+
+        $stmt = $pdo->prepare('INSERT INTO companies (name, email, phone, address, city, country, notes, created_at, updated_at) VALUES (:name, :email, :phone, :address, :city, :country, :notes, :created_at, :updated_at)');
+        $stmt->execute([
+            'name' => $data['name'],
+            'email' => $data['email'] ?? null,
+            'phone' => $data['phone'] ?? null,
+            'address' => $data['address'] ?? null,
+            'city' => $data['city'] ?? null,
+            'country' => $data['country'] ?? null,
+            'notes' => $data['notes'] ?? null,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        jsonResponse(['id' => $pdo->lastInsertId()], 201);
+    }
+
+    if (($method === 'PUT' || $method === 'PATCH') && $id !== null) {
+        $data = parseJsonBody();
+        $fields = ['name', 'email', 'phone', 'address', 'city', 'country', 'notes'];
+        $updates = [];
+        $params = ['id' => $id];
+        foreach ($fields as $field) {
+            if (array_key_exists($field, $data)) {
+                if ($field === 'name' && empty($data[$field])) {
+                    jsonResponse(['error' => 'Name is required.'], 422);
+                }
+                $updates[] = sprintf('%s = :%s', $field, $field);
+                $params[$field] = $data[$field];
+            }
+        }
+        if (!$updates) {
+            jsonResponse(['error' => 'No changes supplied.'], 422);
+        }
+        $updates[] = 'updated_at = :updated_at';
+        $params['updated_at'] = now();
+        $stmt = $pdo->prepare(sprintf('UPDATE companies SET %s WHERE id = :id', implode(', ', $updates)));
+        $stmt->execute($params);
+        jsonResponse(['updated' => true]);
+    }
+
+    jsonResponse(['error' => 'Unsupported method.'], 405);
+}
+
+function handleReservations(string $method, array $segments): void
+{
+    $pdo = db();
+    $id = $segments[1] ?? null;
+
+    if ($method === 'GET') {
+        if ($id !== null) {
+            $stmt = $pdo->prepare('SELECT r.*, g.first_name, g.last_name, g.email, g.phone, g.company_id, c.name AS company_name FROM reservations r JOIN guests g ON g.id = r.guest_id LEFT JOIN companies c ON c.id = g.company_id WHERE r.id = :id');
+            $stmt->execute(['id' => $id]);
+            $reservation = $stmt->fetch();
+            if (!$reservation) {
+                jsonResponse(['error' => 'Reservation not found.'], 404);
+            }
+            $reservation['rooms'] = fetchReservationRooms((int) $id);
+            $reservation['documents'] = fetchReservationDocuments((int) $id);
+            $reservation['status_history'] = fetchReservationStatusLogs((int) $id);
+            jsonResponse($reservation);
+        }
+
+        $conditions = [];
+        $params = [];
+        $query = 'SELECT r.*, g.first_name, g.last_name, g.company_id, c.name AS company_name FROM reservations r JOIN guests g ON g.id = r.guest_id LEFT JOIN companies c ON c.id = g.company_id';
+        if (isset($_GET['status'])) {
+            $conditions[] = 'r.status = :status';
+            $params['status'] = $_GET['status'];
+        }
+        if (isset($_GET['from']) && validateDate($_GET['from'])) {
+            $conditions[] = 'r.check_in_date >= :from_date';
+            $params['from_date'] = $_GET['from'];
+        }
+        if (isset($_GET['to']) && validateDate($_GET['to'])) {
+            $conditions[] = 'r.check_out_date <= :to_date';
+            $params['to_date'] = $_GET['to'];
+        }
+        if ($conditions) {
+            $query .= ' WHERE ' . implode(' AND ', $conditions);
+        }
+        $query .= ' ORDER BY r.check_in_date DESC';
+
+        $stmt = $pdo->prepare($query);
+        $stmt->execute($params);
+        $reservations = $stmt->fetchAll();
+        foreach ($reservations as &$reservation) {
+            $reservation['rooms'] = fetchReservationRooms((int) $reservation['id']);
+        }
+        jsonResponse($reservations);
+    }
+
+    if ($method === 'POST' && $id === null) {
+        $data = parseJsonBody();
+        validateReservationPayload($data);
+
+        $guestCount = calculateGuestCount($data['adults'] ?? 1, $data['children'] ?? 0);
+
+        $pdo->beginTransaction();
+        try {
+            $guestId = $data['guest_id'] ?? null;
+            if ($guestId === null) {
+                $guestId = createGuest($pdo, $data['guest']);
+            } else {
+                $guestId = (int) $guestId;
+                if ($guestId <= 0) {
+                    jsonResponse(['error' => 'guest_id must reference an existing guest.'], 422);
+                }
+            }
+
+            $confirmation = $data['confirmation_number'] ?? generateConfirmationNumber();
+            $statusValue = isset($data['status']) ? normalizeReservationStatus((string) $data['status']) : 'tentative';
+            if ($statusValue === null) {
+                jsonResponse(['error' => 'Unsupported reservation status.'], 422);
+            }
+            $stmt = $pdo->prepare('INSERT INTO reservations (confirmation_number, guest_id, status, check_in_date, check_out_date, adults, children, rate_plan_id, total_amount, currency, booked_via, notes, created_at, updated_at) VALUES (:confirmation_number, :guest_id, :status, :check_in_date, :check_out_date, :adults, :children, :rate_plan_id, :total_amount, :currency, :booked_via, :notes, :created_at, :updated_at)');
+            $stmt->execute([
+                'confirmation_number' => $confirmation,
+                'guest_id' => $guestId,
+                'status' => $statusValue,
+                'check_in_date' => $data['check_in_date'],
+                'check_out_date' => $data['check_out_date'],
+                'adults' => $data['adults'] ?? 1,
+                'children' => $data['children'] ?? 0,
+                'rate_plan_id' => $data['rate_plan_id'] ?? null,
+                'total_amount' => $data['total_amount'] ?? null,
+                'currency' => $data['currency'] ?? 'EUR',
+                'booked_via' => $data['booked_via'] ?? null,
+                'notes' => $data['notes'] ?? null,
+                'created_at' => now(),
+                'updated_at' => now(),
+            ]);
+
+            $reservationId = (int) $pdo->lastInsertId();
+            assignRoomsToReservation(
+                $pdo,
+                $reservationId,
+                $data['rooms'] ?? [],
+                $data['check_in_date'],
+                $data['check_out_date'],
+                $guestCount
+            );
+            logReservationStatus($pdo, $reservationId, $statusValue, $data['status_notes'] ?? null, $data['recorded_by'] ?? null);
+            updateRoomsForReservationStatus($pdo, $reservationId, $statusValue, $data['status_notes'] ?? null, $data['recorded_by'] ?? null);
+
+            $pdo->commit();
+            jsonResponse(['id' => $reservationId, 'confirmation_number' => $confirmation], 201);
+        } catch (Throwable $exception) {
+            $pdo->rollBack();
+            $status = ($exception instanceof InvalidArgumentException || $exception instanceof RuntimeException) ? 422 : 500;
+            jsonResponse(['error' => $exception->getMessage()], $status);
+        }
+    }
+
+    if (($method === 'PUT' || $method === 'PATCH') && $id !== null) {
+        $data = parseJsonBody();
+        $fields = ['status', 'check_in_date', 'check_out_date', 'adults', 'children', 'rate_plan_id', 'total_amount', 'currency', 'booked_via', 'notes', 'guest_id'];
+        $updates = [];
+        $params = ['id' => $id];
+        $stmt = $pdo->prepare('SELECT guest_id, adults, children, check_in_date, check_out_date FROM reservations WHERE id = :id');
+        $stmt->execute(['id' => $id]);
+        $currentReservation = $stmt->fetch();
+        if (!$currentReservation) {
+            jsonResponse(['error' => 'Reservation not found.'], 404);
+        }
+
+        $targetAdults = array_key_exists('adults', $data) ? (int) $data['adults'] : (int) $currentReservation['adults'];
+        $targetChildren = array_key_exists('children', $data) ? (int) $data['children'] : (int) $currentReservation['children'];
+        $targetCheckIn = array_key_exists('check_in_date', $data) ? $data['check_in_date'] : $currentReservation['check_in_date'];
+        $targetCheckOut = array_key_exists('check_out_date', $data) ? $data['check_out_date'] : $currentReservation['check_out_date'];
+        $targetGuestId = array_key_exists('guest_id', $data) ? (int) $data['guest_id'] : (int) $currentReservation['guest_id'];
+
+        if ($targetGuestId <= 0) {
+            jsonResponse(['error' => 'guest_id must reference an existing guest.'], 422);
+        }
+
+        $guestCount = calculateGuestCount($targetAdults, $targetChildren);
+        if ($guestCount < 1) {
+            jsonResponse(['error' => 'At least one guest is required for a reservation.'], 422);
+        }
+
+        $roomSelection = !empty($data['rooms']) ? $data['rooms'] : fetchReservationRooms((int) $id);
+        $roomIds = extractRoomIdsFromSelection($roomSelection);
+        ensureRoomCapacity($pdo, $roomIds, $guestCount);
+
+        if (empty($data['rooms']) && (array_key_exists('check_in_date', $data) || array_key_exists('check_out_date', $data))) {
+            foreach ($roomIds as $roomId) {
+                if (!isRoomAvailable($pdo, $roomId, $targetCheckIn, $targetCheckOut, (int) $id)) {
+                    jsonResponse(['error' => sprintf('Room %d is not available for the updated stay dates.', $roomId)], 422);
+                }
+            }
+        }
+
+        foreach ($fields as $field) {
+            if (array_key_exists($field, $data)) {
+                if (($field === 'check_in_date' || $field === 'check_out_date') && !validateDate($data[$field])) {
+                    jsonResponse(['error' => sprintf('Invalid date for %s', $field)], 422);
+                }
+                if ($field === 'guest_id') {
+                    $guestValue = (int) $data[$field];
+                    if ($guestValue <= 0) {
+                        jsonResponse(['error' => 'guest_id must reference an existing guest.'], 422);
+                    }
+                    $params[$field] = $guestValue;
+                } elseif ($field === 'status') {
+                    $normalizedStatus = normalizeReservationStatus((string) $data[$field]);
+                    if ($normalizedStatus === null) {
+                        jsonResponse(['error' => 'Unsupported reservation status.'], 422);
+                    }
+                    $params[$field] = $normalizedStatus;
+                } else {
+                    $params[$field] = $data[$field];
+                }
+                $updates[] = sprintf('%s = :%s', $field, $field);
+            }
+        }
+
+        if (!$updates && empty($data['rooms']) && empty($data['guest'])) {
+            jsonResponse(['error' => 'No changes supplied.'], 422);
+        }
+
+        $pdo->beginTransaction();
+        try {
+            if ($updates) {
+                $updates[] = 'updated_at = :updated_at';
+                $params['updated_at'] = now();
+                $stmt = $pdo->prepare(sprintf('UPDATE reservations SET %s WHERE id = :id', implode(', ', $updates)));
+                $stmt->execute($params);
+                if (isset($params['status'])) {
+                    $normalizedStatus = $params['status'];
+                    logReservationStatus($pdo, (int) $id, $normalizedStatus, $data['status_notes'] ?? null, $data['recorded_by'] ?? null);
+                    updateRoomsForReservationStatus($pdo, (int) $id, $normalizedStatus, $data['status_notes'] ?? null, $data['recorded_by'] ?? null);
+                }
+            }
+
+            if (isset($data['guest']) && is_array($data['guest'])) {
+                $guestFields = ['first_name', 'last_name', 'email', 'phone', 'address', 'city', 'country', 'company_id', 'notes'];
+                $guestUpdates = [];
+                $guestParams = ['id' => $targetGuestId];
+                foreach ($guestFields as $field) {
+                    if (array_key_exists($field, $data['guest'])) {
+                        $guestUpdates[] = sprintf('%s = :%s', $field, $field);
+                        if ($field === 'company_id') {
+                            $guestParams[$field] = normalizeCompanyId($pdo, $data['guest'][$field]);
+                        } else {
+                            $guestParams[$field] = $data['guest'][$field];
+                        }
+                    }
+                }
+                if ($guestUpdates) {
+                    $guestUpdates[] = 'updated_at = :updated_at';
+                    $guestParams['updated_at'] = now();
+                    $guestSql = sprintf('UPDATE guests SET %s WHERE id = :id', implode(', ', $guestUpdates));
+                    $pdo->prepare($guestSql)->execute($guestParams);
+                }
+            }
+
+            if (!empty($data['rooms'])) {
+                $pdo->prepare('DELETE FROM reservation_rooms WHERE reservation_id = :id')->execute(['id' => $id]);
+                assignRoomsToReservation(
+                    $pdo,
+                    (int) $id,
+                    $data['rooms'],
+                    $targetCheckIn,
+                    $targetCheckOut,
+                    $guestCount,
+                    (int) $id
+                );
+            }
+
+            $pdo->commit();
+            jsonResponse(['updated' => true]);
+        } catch (Throwable $exception) {
+            $pdo->rollBack();
+            $status = ($exception instanceof InvalidArgumentException || $exception instanceof RuntimeException) ? 422 : 500;
+            jsonResponse(['error' => $exception->getMessage()], $status);
+        }
+    }
+
+    if ($method === 'POST' && $id !== null && isset($segments[2])) {
+        $action = $segments[2];
+        if ($action === 'status') {
+            $data = parseJsonBody();
+            $targetStatus = $data['status'] ?? null;
+            if (!is_string($targetStatus)) {
+                jsonResponse(['error' => 'status is required.'], 422);
+            }
+            handleReservationStatusChange((int) $id, $targetStatus, $data);
+        } elseif ($action === 'check-in') {
+            $data = parseJsonBody();
+            handleReservationStatusChange((int) $id, 'checked_in', $data);
+        } elseif ($action === 'check-out') {
+            $data = parseJsonBody();
+            handleReservationStatusChange((int) $id, 'checked_out', $data);
+        } elseif ($action === 'pay') {
+            $data = parseJsonBody();
+            handleReservationStatusChange((int) $id, 'paid', $data);
+        } elseif ($action === 'no-show') {
+            $data = parseJsonBody();
+            handleReservationStatusChange((int) $id, 'no_show', $data);
+        } elseif ($action === 'documents') {
+            $data = parseJsonBody();
+            addReservationDocument((int) $id, $data);
+        } else {
+            jsonResponse(['error' => 'Unknown reservation action.'], 400);
+        }
+        return;
+    }
+
+    jsonResponse(['error' => 'Unsupported method.'], 405);
+}
+
+function handleReservationStatusChange(int $reservationId, string $status, ?array $payload = null): void
+{
+    $normalizedStatus = normalizeReservationStatus($status);
+    if ($normalizedStatus === null) {
+        jsonResponse(['error' => 'Unsupported reservation status.'], 422);
+    }
+
+    $pdo = db();
+    $exists = $pdo->prepare('SELECT id FROM reservations WHERE id = :id');
+    $exists->execute(['id' => $reservationId]);
+    if ($exists->fetchColumn() === false) {
+        jsonResponse(['error' => 'Reservation not found.'], 404);
+    }
+
+    $data = $payload ?? parseJsonBody();
+    $notes = $data['notes'] ?? null;
+    $recordedBy = $data['recorded_by'] ?? null;
+
+    $pdo->beginTransaction();
+    try {
+        $stmt = $pdo->prepare('UPDATE reservations SET status = :status, updated_at = :updated_at WHERE id = :id');
+        $stmt->execute([
+            'status' => $normalizedStatus,
+            'updated_at' => now(),
+            'id' => $reservationId,
+        ]);
+
+        logReservationStatus($pdo, $reservationId, $normalizedStatus, $notes, $recordedBy);
+        updateRoomsForReservationStatus($pdo, $reservationId, $normalizedStatus, $notes, $recordedBy);
+
+        $pdo->commit();
+    } catch (Throwable $exception) {
+        $pdo->rollBack();
+        jsonResponse(['error' => 'Unable to update reservation status.', 'details' => $exception->getMessage()], 500);
+    }
+
+    jsonResponse(['status' => $normalizedStatus]);
+}
+
+function validateReservationPayload(array $data): void
+{
+    foreach (['check_in_date', 'check_out_date'] as $field) {
+        if (empty($data[$field]) || !validateDate($data[$field])) {
+            jsonResponse(['error' => sprintf('Invalid or missing %s', $field)], 422);
+        }
+    }
+
+    if (!isset($data['guest_id']) && empty($data['guest'])) {
+        jsonResponse(['error' => 'Guest information is required.'], 422);
+    }
+
+    if (isset($data['guest'])) {
+        foreach (['first_name', 'last_name'] as $field) {
+            if (empty($data['guest'][$field])) {
+                jsonResponse(['error' => sprintf('Guest field %s is required.', $field)], 422);
+            }
+        }
+    }
+
+    if (empty($data['rooms']) || !is_array($data['rooms'])) {
+        jsonResponse(['error' => 'rooms must be a non-empty array of room assignments.'], 422);
+    }
+
+    $guestCount = calculateGuestCount($data['adults'] ?? 1, $data['children'] ?? 0);
+    if ($guestCount < 1) {
+        jsonResponse(['error' => 'At least one guest is required for a reservation.'], 422);
+    }
+
+    if (isset($data['status']) && normalizeReservationStatus((string) $data['status']) === null) {
+        jsonResponse(['error' => 'Unsupported reservation status.'], 422);
+    }
+}
+
+function calculateGuestCount($adults, $children): int
+{
+    $adultCount = max(0, (int) $adults);
+    $childCount = max(0, (int) $children);
+
+    return $adultCount + $childCount;
+}
+
+function normalizeRoomAssignments(array $rooms): array
+{
+    $assignments = [];
+    foreach ($rooms as $room) {
+        if (is_array($room)) {
+            $roomId = (int) ($room['room_id'] ?? 0);
+            $nightlyRate = $room['nightly_rate'] ?? null;
+            $currency = $room['currency'] ?? null;
+        } else {
+            $roomId = (int) $room;
+            $nightlyRate = null;
+            $currency = null;
+        }
+
+        if ($roomId === 0) {
+            throw new InvalidArgumentException('room_id is required for each room assignment.');
+        }
+
+        $assignments[] = [
+            'room_id' => $roomId,
+            'nightly_rate' => $nightlyRate,
+            'currency' => $currency,
+        ];
+    }
+
+    return $assignments;
+}
+
+function extractRoomIdsFromSelection(array $rooms): array
+{
+    return array_column(normalizeRoomAssignments($rooms), 'room_id');
+}
+
+function ensureRoomCapacity(PDO $pdo, array $roomIds, int $guestCount): void
+{
+    $uniqueRoomIds = array_values(array_unique(array_map('intval', $roomIds)));
+    if (empty($uniqueRoomIds)) {
+        throw new InvalidArgumentException('At least one room must be selected.');
+    }
+    if ($guestCount < 1) {
+        throw new InvalidArgumentException('At least one guest is required for a reservation.');
+    }
+
+    $placeholders = implode(', ', array_fill(0, count($uniqueRoomIds), '?'));
+    $sql = <<<SQL
+        SELECT rooms.id, rooms.room_number, room_types.name AS room_type_name, room_types.max_occupancy
+        FROM rooms
+        JOIN room_types ON room_types.id = rooms.room_type_id
+        WHERE rooms.id IN ($placeholders)
+    SQL;
+    $stmt = $pdo->prepare($sql);
+    $stmt->execute($uniqueRoomIds);
+    $records = $stmt->fetchAll();
+
+    if (count($records) !== count($uniqueRoomIds)) {
+        throw new RuntimeException('One or more selected rooms could not be found.');
+    }
+
+    $totalCapacity = 0;
+    foreach ($records as $record) {
+        $capacity = (int) ($record['max_occupancy'] ?? 0);
+        if ($capacity <= 0) {
+            $roomLabel = $record['room_number'] ?? ('#' . $record['id']);
+            $typeLabel = $record['room_type_name'] ?? '';
+            throw new RuntimeException(sprintf('Room %s%s has no defined capacity.', $roomLabel, $typeLabel ? ' (' . $typeLabel . ')' : ''));
+        }
+        $totalCapacity += $capacity;
+    }
+
+    if ($guestCount > $totalCapacity) {
+        $labels = array_map(
+            static function ($record): string {
+                $roomLabel = $record['room_number'] ?? ('#' . $record['id']);
+                return $record['room_type_name']
+                    ? sprintf('%s (%s)', $roomLabel, $record['room_type_name'])
+                    : $roomLabel;
+            },
+            $records
+        );
+        throw new RuntimeException(sprintf(
+            'Selected rooms (%s) can accommodate up to %d guests, but %d were provided.',
+            implode(', ', $labels),
+            $totalCapacity,
+            $guestCount
+        ));
+    }
+}
+
+function createGuest(PDO $pdo, array $guest): int
+{
+    $companyId = normalizeCompanyId($pdo, $guest['company_id'] ?? null);
+
+    $stmt = $pdo->prepare('INSERT INTO guests (first_name, last_name, email, phone, address, city, country, company_id, notes, created_at, updated_at) VALUES (:first_name, :last_name, :email, :phone, :address, :city, :country, :company_id, :notes, :created_at, :updated_at)');
+    $stmt->execute([
+        'first_name' => $guest['first_name'],
+        'last_name' => $guest['last_name'],
+        'email' => $guest['email'] ?? null,
+        'phone' => $guest['phone'] ?? null,
+        'address' => $guest['address'] ?? null,
+        'city' => $guest['city'] ?? null,
+        'country' => $guest['country'] ?? null,
+        'company_id' => $companyId,
+        'notes' => $guest['notes'] ?? null,
+        'created_at' => now(),
+        'updated_at' => now(),
+    ]);
+
+    return (int) $pdo->lastInsertId();
+}
+
+function normalizeCompanyId(PDO $pdo, mixed $value): ?int
+{
+    if ($value === null) {
+        return null;
+    }
+
+    if (is_string($value)) {
+        $trimmed = trim($value);
+        if ($trimmed === '') {
+            return null;
+        }
+        $value = $trimmed;
+    }
+
+    $companyId = (int) $value;
+    if ($companyId <= 0) {
+        jsonResponse(['error' => 'company_id must reference an existing company.'], 422);
+    }
+
+    ensureCompanyExists($pdo, $companyId);
+
+    return $companyId;
+}
+
+function ensureCompanyExists(PDO $pdo, int $companyId): void
+{
+    $stmt = $pdo->prepare('SELECT id FROM companies WHERE id = :id');
+    $stmt->execute(['id' => $companyId]);
+    if ($stmt->fetchColumn() === false) {
+        jsonResponse(['error' => 'company_id must reference an existing company.'], 422);
+    }
+}
+
+function assignRoomsToReservation(PDO $pdo, int $reservationId, array $rooms, string $checkIn, string $checkOut, int $guestCount, ?int $ignoreReservationId = null): void
+{
+    $assignments = normalizeRoomAssignments($rooms);
+    $roomIds = array_column($assignments, 'room_id');
+
+    ensureRoomCapacity($pdo, $roomIds, $guestCount);
+
+    foreach ($assignments as $assignment) {
+        $roomId = $assignment['room_id'];
+        if (!isRoomAvailable($pdo, $roomId, $checkIn, $checkOut, $ignoreReservationId ?? $reservationId)) {
+            throw new RuntimeException(sprintf('Room %d is not available for the selected dates.', $roomId));
+        }
+
+        $stmt = $pdo->prepare('INSERT INTO reservation_rooms (reservation_id, room_id, nightly_rate, currency) VALUES (:reservation_id, :room_id, :nightly_rate, :currency)');
+        $stmt->execute([
+            'reservation_id' => $reservationId,
+            'room_id' => $roomId,
+            'nightly_rate' => $assignment['nightly_rate'],
+            'currency' => $assignment['currency'],
+        ]);
+    }
+}
+
+function isRoomAvailable(PDO $pdo, int $roomId, string $checkIn, string $checkOut, ?int $ignoreReservationId = null): bool
+{
+    $query = 'SELECT COUNT(*) FROM reservation_rooms rr JOIN reservations r ON rr.reservation_id = r.id WHERE rr.room_id = :room_id AND r.status NOT IN (\'cancelled\', \'no_show\') AND NOT (r.check_out_date <= :check_in OR r.check_in_date >= :check_out)';
+    $params = [
+        'room_id' => $roomId,
+        'check_in' => $checkIn,
+        'check_out' => $checkOut,
+    ];
+    if ($ignoreReservationId !== null) {
+        $query .= ' AND r.id <> :reservation_id';
+        $params['reservation_id'] = $ignoreReservationId;
+    }
+    $stmt = $pdo->prepare($query);
+    $stmt->execute($params);
+    return (int) $stmt->fetchColumn() === 0;
+}
+
+function fetchReservationRooms(int $reservationId): array
+{
+    $pdo = db();
+    $stmt = $pdo->prepare('SELECT rr.*, rooms.room_number FROM reservation_rooms rr JOIN rooms ON rooms.id = rr.room_id WHERE rr.reservation_id = :id');
+    $stmt->execute(['id' => $reservationId]);
+    return $stmt->fetchAll();
+}
+
+function fetchReservationDocuments(int $reservationId): array
+{
+    $pdo = db();
+    $stmt = $pdo->prepare('SELECT * FROM reservation_documents WHERE reservation_id = :id ORDER BY uploaded_at DESC');
+    $stmt->execute(['id' => $reservationId]);
+    return $stmt->fetchAll();
+}
+
+function fetchReservationStatusLogs(int $reservationId): array
+{
+    $pdo = db();
+    $stmt = $pdo->prepare('SELECT * FROM reservation_status_logs WHERE reservation_id = :id ORDER BY recorded_at DESC');
+    $stmt->execute(['id' => $reservationId]);
+    return $stmt->fetchAll();
+}
+
+function logReservationStatus(PDO $pdo, int $reservationId, string $status, ?string $notes, $recordedBy): void
+{
+    $stmt = $pdo->prepare('INSERT INTO reservation_status_logs (reservation_id, status, notes, recorded_by, recorded_at) VALUES (:reservation_id, :status, :notes, :recorded_by, :recorded_at)');
+    $stmt->execute([
+        'reservation_id' => $reservationId,
+        'status' => $status,
+        'notes' => $notes,
+        'recorded_by' => $recordedBy,
+        'recorded_at' => now(),
+    ]);
+}
+
+function addReservationDocument(int $reservationId, array $data): void
+{
+    if (empty($data['document_type'])) {
+        jsonResponse(['error' => 'document_type is required.'], 422);
+    }
+
+    $pdo = db();
+    $stmt = $pdo->prepare('INSERT INTO reservation_documents (reservation_id, document_type, file_name, file_path, metadata, uploaded_by, uploaded_at) VALUES (:reservation_id, :document_type, :file_name, :file_path, :metadata, :uploaded_by, :uploaded_at)');
+    $stmt->execute([
+        'reservation_id' => $reservationId,
+        'document_type' => $data['document_type'],
+        'file_name' => $data['file_name'] ?? null,
+        'file_path' => $data['file_path'] ?? null,
+        'metadata' => isset($data['metadata']) ? json_encode($data['metadata']) : null,
+        'uploaded_by' => $data['uploaded_by'] ?? null,
+        'uploaded_at' => now(),
+    ]);
+
+    jsonResponse(['created' => true], 201);
+}
+
+function handleHousekeeping(string $method, array $segments): void
+{
+    $sub = $segments[1] ?? null;
+    if ($sub !== 'tasks') {
+        jsonResponse(['error' => 'Unknown housekeeping resource.'], 404);
+    }
+
+    $pdo = db();
+    $id = $segments[2] ?? null;
+
+    if ($method === 'GET') {
+        $query = 'SELECT t.*, rooms.room_number FROM tasks t LEFT JOIN rooms ON rooms.id = t.room_id';
+        $conditions = [];
+        $params = [];
+        if (isset($_GET['status'])) {
+            $conditions[] = 't.status = :status';
+            $params['status'] = $_GET['status'];
+        }
+        if ($conditions) {
+            $query .= ' WHERE ' . implode(' AND ', $conditions);
+        }
+        $query .= ' ORDER BY t.due_date IS NULL, t.due_date';
+
+        $stmt = $pdo->prepare($query);
+        $stmt->execute($params);
+        jsonResponse($stmt->fetchAll());
+    }
+
+    if ($method === 'POST') {
+        $data = parseJsonBody();
+        if (empty($data['title'])) {
+            jsonResponse(['error' => 'title is required.'], 422);
+        }
+
+        $stmt = $pdo->prepare('INSERT INTO tasks (room_id, assigned_to, title, description, status, due_date, created_at, updated_at) VALUES (:room_id, :assigned_to, :title, :description, :status, :due_date, :created_at, :updated_at)');
+        $stmt->execute([
+            'room_id' => $data['room_id'] ?? null,
+            'assigned_to' => $data['assigned_to'] ?? null,
+            'title' => $data['title'],
+            'description' => $data['description'] ?? null,
+            'status' => $data['status'] ?? 'open',
+            'due_date' => isset($data['due_date']) && validateDateTime($data['due_date']) ? $data['due_date'] : null,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        jsonResponse(['id' => $pdo->lastInsertId()], 201);
+    }
+
+    if (($method === 'PUT' || $method === 'PATCH') && $id !== null) {
+        $data = parseJsonBody();
+        $fields = ['room_id', 'assigned_to', 'title', 'description', 'status', 'due_date', 'completed_at'];
+        $updates = [];
+        $params = ['id' => $id];
+        foreach ($fields as $field) {
+            if (array_key_exists($field, $data)) {
+                if (in_array($field, ['due_date', 'completed_at'], true) && $data[$field] !== null && !validateDateTime($data[$field])) {
+                    jsonResponse(['error' => sprintf('Invalid datetime for %s', $field)], 422);
+                }
+                $updates[] = sprintf('%s = :%s', $field, $field);
+                $params[$field] = $data[$field];
+            }
+        }
+        if (!$updates) {
+            jsonResponse(['error' => 'No changes supplied.'], 422);
+        }
+        $updates[] = 'updated_at = :updated_at';
+        $params['updated_at'] = now();
+        $stmt = $pdo->prepare(sprintf('UPDATE tasks SET %s WHERE id = :id', implode(', ', $updates)));
+        $stmt->execute($params);
+
+        if (isset($data['room_status']) && isset($data['room_id'])) {
+            logHousekeepingStatus((int) $data['room_id'], $data['room_status'], $data['description'] ?? null, $data['assigned_to'] ?? null);
+        }
+
+        jsonResponse(['updated' => true]);
+    }
+
+    jsonResponse(['error' => 'Unsupported method.'], 405);
+}
+
+function logHousekeepingStatus(int $roomId, string $status, ?string $notes, $userId): void
+{
+    $pdo = db();
+    $stmt = $pdo->prepare('INSERT INTO housekeeping_logs (room_id, status, notes, recorded_by, recorded_at) VALUES (:room_id, :status, :notes, :recorded_by, :recorded_at)');
+    $stmt->execute([
+        'room_id' => $roomId,
+        'status' => $status,
+        'notes' => $notes,
+        'recorded_by' => $userId,
+        'recorded_at' => now(),
+    ]);
+}
+
+function getReservationRoomIds(PDO $pdo, int $reservationId): array
+{
+    $stmt = $pdo->prepare('SELECT room_id FROM reservation_rooms WHERE reservation_id = :reservation_id');
+    $stmt->execute(['reservation_id' => $reservationId]);
+    return array_map('intval', array_column($stmt->fetchAll(), 'room_id'));
+}
+
+function normalizeReservationStatus(string $status): ?string
+{
+    $normalized = strtolower(trim($status));
+    return in_array($normalized, RESERVATION_STATUSES, true) ? $normalized : null;
+}
+
+function updateRoomsForReservationStatus(PDO $pdo, int $reservationId, string $status, ?string $notes, $recordedBy): void
+{
+    $roomIds = getReservationRoomIds($pdo, $reservationId);
+    if (!$roomIds) {
+        return;
+    }
+
+    $roomStatus = null;
+    $housekeepingStatus = null;
+
+    if (in_array($status, ['checked_in', 'paid'], true)) {
+        $roomStatus = 'occupied';
+        $housekeepingStatus = 'occupied';
+    } elseif ($status === 'checked_out') {
+        $roomStatus = 'in_cleaning';
+        $housekeepingStatus = 'in_cleaning';
+    } elseif (in_array($status, ['cancelled', 'no_show'], true)) {
+        $roomStatus = 'available';
+        $housekeepingStatus = 'available';
+    }
+
+    if ($roomStatus !== null) {
+        $updateStmt = $pdo->prepare('UPDATE rooms SET status = :status, updated_at = :updated_at WHERE id = :id');
+        foreach ($roomIds as $roomId) {
+            $updateStmt->execute([
+                'status' => $roomStatus,
+                'updated_at' => now(),
+                'id' => $roomId,
+            ]);
+        }
+    }
+
+    if ($housekeepingStatus !== null) {
+        foreach ($roomIds as $roomId) {
+            logHousekeepingStatus($roomId, $housekeepingStatus, $notes, $recordedBy);
+        }
+    }
+}
+
+function getCalendarColorSettings(PDO $pdo): array
+{
+    $stmt = $pdo->prepare("SELECT `key`, `value` FROM settings WHERE `key` LIKE 'calendar_color_%'");
+    $stmt->execute();
+    $overrides = [];
+    foreach ($stmt->fetchAll() as $row) {
+        $status = substr($row['key'], strlen('calendar_color_'));
+        if ($status && in_array($status, CALENDAR_COLOR_STATUSES, true) && is_string($row['value']) && $row['value'] !== '') {
+            $overrides[$status] = $row['value'];
+        }
+    }
+
+    return array_merge(DEFAULT_CALENDAR_COLORS, $overrides);
+}
+
+function saveCalendarColorSettings(PDO $pdo, array $colors): void
+{
+    if (!$colors) {
+        return;
+    }
+    $stmt = $pdo->prepare('INSERT INTO settings (`key`, `value`, updated_at) VALUES (:key, :value, :updated_at) ON DUPLICATE KEY UPDATE `value` = VALUES(`value`), updated_at = VALUES(updated_at)');
+    foreach ($colors as $status => $color) {
+        $stmt->execute([
+            'key' => sprintf('calendar_color_%s', $status),
+            'value' => $color,
+            'updated_at' => now(),
+        ]);
+    }
+}
+
+function clearCalendarColorSettings(PDO $pdo): void
+{
+    $pdo->prepare("DELETE FROM settings WHERE `key` LIKE 'calendar_color_%'")->execute();
+}
+
+function normalizeHexColor(string $value): ?string
+{
+    $trimmed = trim($value);
+    if ($trimmed === '') {
+        return null;
+    }
+    $trimmed = ltrim($trimmed, '#');
+    if (preg_match('/^[0-9a-fA-F]{6}$/', $trimmed) === 1) {
+        return '#' . strtoupper($trimmed);
+    }
+    if (preg_match('/^[0-9a-fA-F]{3}$/', $trimmed) === 1) {
+        return '#' . strtoupper(
+            $trimmed[0] . $trimmed[0] .
+            $trimmed[1] . $trimmed[1] .
+            $trimmed[2] . $trimmed[2]
+        );
+    }
+
+    return null;
+}
+
+function handleInvoices(string $method, array $segments): void
+{
+    $pdo = db();
+    $id = $segments[1] ?? null;
+
+    if ($method === 'GET') {
+        if ($id !== null) {
+            $stmt = $pdo->prepare('SELECT * FROM invoices WHERE id = :id');
+            $stmt->execute(['id' => $id]);
+            $invoice = $stmt->fetch();
+            if (!$invoice) {
+                jsonResponse(['error' => 'Invoice not found.'], 404);
+            }
+            $invoice['items'] = fetchInvoiceItems((int) $id);
+            jsonResponse($invoice);
+        }
+
+        $stmt = $pdo->query('SELECT * FROM invoices ORDER BY issue_date DESC');
+        jsonResponse($stmt->fetchAll());
+    }
+
+    if ($method === 'POST' && $id === null) {
+        $data = parseJsonBody();
+        if (empty($data['reservation_id']) || empty($data['items']) || !is_array($data['items'])) {
+            jsonResponse(['error' => 'reservation_id and items are required.'], 422);
+        }
+
+        $invoiceNumber = $data['invoice_number'] ?? generateInvoiceNumber();
+        $issueDate = $data['issue_date'] ?? date('Y-m-d');
+        $dueDate = $data['due_date'] ?? null;
+        $status = $data['status'] ?? 'issued';
+
+        $totals = calculateInvoiceTotals($data['items']);
+
+        $stmt = $pdo->prepare('INSERT INTO invoices (reservation_id, invoice_number, issue_date, due_date, total_amount, tax_amount, status, created_at, updated_at) VALUES (:reservation_id, :invoice_number, :issue_date, :due_date, :total_amount, :tax_amount, :status, :created_at, :updated_at)');
+        $stmt->execute([
+            'reservation_id' => $data['reservation_id'],
+            'invoice_number' => $invoiceNumber,
+            'issue_date' => $issueDate,
+            'due_date' => $dueDate,
+            'total_amount' => $totals['total'],
+            'tax_amount' => $totals['tax'],
+            'status' => $status,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        $invoiceId = (int) $pdo->lastInsertId();
+        storeInvoiceItems($invoiceId, $data['items']);
+
+        jsonResponse(['id' => $invoiceId, 'invoice_number' => $invoiceNumber], 201);
+    }
+
+    jsonResponse(['error' => 'Unsupported method.'], 405);
+}
+
+function fetchInvoiceItems(int $invoiceId): array
+{
+    $pdo = db();
+    $stmt = $pdo->prepare('SELECT * FROM invoice_items WHERE invoice_id = :invoice_id');
+    $stmt->execute(['invoice_id' => $invoiceId]);
+    return $stmt->fetchAll();
+}
+
+function storeInvoiceItems(int $invoiceId, array $items): void
+{
+    $pdo = db();
+    $stmt = $pdo->prepare('INSERT INTO invoice_items (invoice_id, description, quantity, unit_price, tax_rate, total_amount, created_at, updated_at) VALUES (:invoice_id, :description, :quantity, :unit_price, :tax_rate, :total_amount, :created_at, :updated_at)');
+    foreach ($items as $item) {
+        if (empty($item['description'])) {
+            throw new InvalidArgumentException('Each invoice item requires a description.');
+        }
+        $quantity = (float) ($item['quantity'] ?? 1);
+        $unitPrice = (float) ($item['unit_price'] ?? 0);
+        $taxRate = isset($item['tax_rate']) ? (float) $item['tax_rate'] : null;
+        $total = $quantity * $unitPrice * (1 + ($taxRate ?? 0) / 100);
+
+        $stmt->execute([
+            'invoice_id' => $invoiceId,
+            'description' => $item['description'],
+            'quantity' => $quantity,
+            'unit_price' => $unitPrice,
+            'tax_rate' => $taxRate,
+            'total_amount' => $total,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+    }
+}
+
+function calculateInvoiceTotals(array $items): array
+{
+    $subtotal = 0;
+    $tax = 0;
+    foreach ($items as $item) {
+        $quantity = (float) ($item['quantity'] ?? 1);
+        $unitPrice = (float) ($item['unit_price'] ?? 0);
+        $lineSubtotal = $quantity * $unitPrice;
+        $subtotal += $lineSubtotal;
+        $taxRate = isset($item['tax_rate']) ? (float) $item['tax_rate'] : 0;
+        $tax += $lineSubtotal * ($taxRate / 100);
+    }
+
+    return [
+        'subtotal' => round($subtotal, 2),
+        'tax' => round($tax, 2),
+        'total' => round($subtotal + $tax, 2),
+    ];
+}
+
+function handlePayments(string $method, array $segments): void
+{
+    $pdo = db();
+
+    if ($method === 'GET') {
+        $stmt = $pdo->query('SELECT payments.*, invoices.invoice_number FROM payments JOIN invoices ON invoices.id = payments.invoice_id ORDER BY paid_at DESC');
+        jsonResponse($stmt->fetchAll());
+    }
+
+    if ($method === 'POST') {
+        $data = parseJsonBody();
+        foreach (['invoice_id', 'method', 'amount'] as $field) {
+            if (empty($data[$field])) {
+                jsonResponse(['error' => sprintf('%s is required.', $field)], 422);
+            }
+        }
+
+        $stmt = $pdo->prepare('INSERT INTO payments (invoice_id, method, amount, currency, paid_at, reference, notes, created_at, updated_at) VALUES (:invoice_id, :method, :amount, :currency, :paid_at, :reference, :notes, :created_at, :updated_at)');
+        $stmt->execute([
+            'invoice_id' => $data['invoice_id'],
+            'method' => $data['method'],
+            'amount' => $data['amount'],
+            'currency' => $data['currency'] ?? 'EUR',
+            'paid_at' => $data['paid_at'] ?? now(),
+            'reference' => $data['reference'] ?? null,
+            'notes' => $data['notes'] ?? null,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        jsonResponse(['id' => $pdo->lastInsertId()], 201);
+    }
+
+    jsonResponse(['error' => 'Unsupported method.'], 405);
+}
+
+function handleReports(string $method, array $segments): void
+{
+    if ($method !== 'GET') {
+        jsonResponse(['error' => 'Only GET supported for reports.'], 405);
+    }
+
+    $type = $segments[1] ?? null;
+    if ($type === 'occupancy') {
+        $start = $_GET['start'] ?? date('Y-m-d');
+        $end = $_GET['end'] ?? $start;
+        if (!validateDate($start) || !validateDate($end)) {
+            jsonResponse(['error' => 'start and end must be valid dates (Y-m-d).'], 422);
+        }
+        jsonResponse(buildOccupancyReport($start, $end));
+    }
+
+    if ($type === 'revenue') {
+        $start = $_GET['start'] ?? date('Y-m-01');
+        $end = $_GET['end'] ?? date('Y-m-t');
+        if (!validateDate($start) || !validateDate($end)) {
+            jsonResponse(['error' => 'start and end must be valid dates (Y-m-d).'], 422);
+        }
+        jsonResponse(buildRevenueReport($start, $end));
+    }
+
+    if ($type === 'forecast') {
+        $start = $_GET['start'] ?? date('Y-m-d');
+        $end = $_GET['end'] ?? date('Y-m-d', strtotime('+30 days'));
+        if (!validateDate($start) || !validateDate($end)) {
+            jsonResponse(['error' => 'start and end must be valid dates (Y-m-d).'], 422);
+        }
+        jsonResponse(buildForecastReport($start, $end));
+    }
+
+    jsonResponse(['error' => 'Unknown report type.'], 404);
+}
+
+function buildOccupancyReport(string $start, string $end): array
+{
+    $pdo = db();
+    $stmt = $pdo->query('SELECT COUNT(*) FROM rooms');
+    $totalRooms = (int) $stmt->fetchColumn();
+
+    $period = new DatePeriod(new DateTimeImmutable($start), new DateInterval('P1D'), (new DateTimeImmutable($end))->modify('+1 day'));
+    $report = [];
+    foreach ($period as $date) {
+        $formatted = $date->format('Y-m-d');
+        $stmt = $pdo->prepare('SELECT COUNT(DISTINCT rr.room_id) FROM reservation_rooms rr JOIN reservations r ON rr.reservation_id = r.id WHERE r.status IN (\'confirmed\', \'checked_in\', \'paid\') AND :date >= r.check_in_date AND :date < r.check_out_date');
+        $stmt->execute(['date' => $formatted]);
+        $occupied = (int) $stmt->fetchColumn();
+        $report[] = [
+            'date' => $formatted,
+            'occupied_rooms' => $occupied,
+            'available_rooms' => $totalRooms,
+            'occupancy_rate' => $totalRooms === 0 ? 0 : round(($occupied / $totalRooms) * 100, 2),
+        ];
+    }
+
+    return $report;
+}
+
+function buildRevenueReport(string $start, string $end): array
+{
+    $pdo = db();
+    $stmt = $pdo->prepare('SELECT SUM(total_amount) as invoice_total, SUM(tax_amount) as tax_total FROM invoices WHERE issue_date BETWEEN :start AND :end');
+    $stmt->execute(['start' => $start, 'end' => $end]);
+    $invoiceTotals = $stmt->fetch() ?: ['invoice_total' => 0, 'tax_total' => 0];
+
+    $stmt = $pdo->prepare('SELECT method, SUM(amount) as total_amount FROM payments WHERE paid_at BETWEEN :start_dt AND :end_dt GROUP BY method');
+    $stmt->execute([
+        'start_dt' => $start . ' 00:00:00',
+        'end_dt' => $end . ' 23:59:59',
+    ]);
+    $payments = $stmt->fetchAll();
+
+    return [
+        'period' => ['start' => $start, 'end' => $end],
+        'invoices' => $invoiceTotals,
+        'payments' => $payments,
+    ];
+}
+
+function buildForecastReport(string $start, string $end): array
+{
+    $pdo = db();
+    $stmt = $pdo->prepare('SELECT r.check_in_date, r.check_out_date, COUNT(rr.room_id) as rooms, COALESCE(r.total_amount, 0) as total_amount FROM reservations r LEFT JOIN reservation_rooms rr ON rr.reservation_id = r.id WHERE r.status IN (\'tentative\', \'confirmed\', \'paid\') AND r.check_in_date BETWEEN :start AND :end GROUP BY r.id');
+    $stmt->execute(['start' => $start, 'end' => $end]);
+    $rows = $stmt->fetchAll();
+
+    $totalRooms = array_sum(array_column($rows, 'rooms'));
+    $totalRevenue = array_sum(array_column($rows, 'total_amount'));
+
+    return [
+        'period' => ['start' => $start, 'end' => $end],
+        'expected_rooms' => $totalRooms,
+        'expected_revenue' => $totalRevenue,
+        'reservations' => $rows,
+    ];
+}
+
+function handleUsers(string $method, array $segments): void
+{
+    $pdo = db();
+    $id = $segments[1] ?? null;
+
+    if ($method === 'GET') {
+        $stmt = $pdo->query('SELECT u.id, u.name, u.email, u.created_at, u.updated_at FROM users u ORDER BY u.name');
+        $users = $stmt->fetchAll();
+        foreach ($users as &$user) {
+            $stmtRoles = $pdo->prepare('SELECT r.id, r.name FROM roles r JOIN role_user ru ON ru.role_id = r.id WHERE ru.user_id = :user_id');
+            $stmtRoles->execute(['user_id' => $user['id']]);
+            $user['roles'] = $stmtRoles->fetchAll();
+        }
+        jsonResponse($users);
+    }
+
+    if ($method === 'POST' && $id === null) {
+        $data = parseJsonBody();
+        foreach (['name', 'email', 'password'] as $field) {
+            if (empty($data[$field])) {
+                jsonResponse(['error' => sprintf('%s is required.', $field)], 422);
+            }
+        }
+
+        $stmt = $pdo->prepare('INSERT INTO users (name, email, password, created_at, updated_at) VALUES (:name, :email, :password, :created_at, :updated_at)');
+        $stmt->execute([
+            'name' => $data['name'],
+            'email' => $data['email'],
+            'password' => password_hash($data['password'], PASSWORD_BCRYPT),
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        $userId = (int) $pdo->lastInsertId();
+        if (!empty($data['role_ids']) && is_array($data['role_ids'])) {
+            assignRolesToUser($userId, $data['role_ids']);
+        }
+
+        jsonResponse(['id' => $userId], 201);
+    }
+
+    if ($method === 'POST' && $id !== null && ($segments[2] ?? null) === 'roles') {
+        $data = parseJsonBody();
+        assignRolesToUser((int) $id, $data['role_ids'] ?? []);
+        jsonResponse(['updated' => true]);
+    }
+
+    jsonResponse(['error' => 'Unsupported method.'], 405);
+}
+
+function assignRolesToUser(int $userId, array $roleIds): void
+{
+    $pdo = db();
+    $pdo->prepare('DELETE FROM role_user WHERE user_id = :user_id')->execute(['user_id' => $userId]);
+    $stmt = $pdo->prepare('INSERT INTO role_user (user_id, role_id, assigned_at) VALUES (:user_id, :role_id, :assigned_at)');
+    foreach ($roleIds as $roleId) {
+        $stmt->execute([
+            'user_id' => $userId,
+            'role_id' => $roleId,
+            'assigned_at' => now(),
+        ]);
+    }
+}
+
+function handleRoles(string $method, array $segments): void
+{
+    $pdo = db();
+    $id = $segments[1] ?? null;
+
+    if ($method === 'GET') {
+        $stmt = $pdo->query('SELECT * FROM roles ORDER BY name');
+        jsonResponse($stmt->fetchAll());
+    }
+
+    if ($method === 'POST' && $id === null) {
+        $data = parseJsonBody();
+        if (empty($data['name'])) {
+            jsonResponse(['error' => 'name is required.'], 422);
+        }
+
+        $stmt = $pdo->prepare('INSERT INTO roles (name, description, created_at, updated_at) VALUES (:name, :description, :created_at, :updated_at)');
+        $stmt->execute([
+            'name' => $data['name'],
+            'description' => $data['description'] ?? null,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        jsonResponse(['id' => $pdo->lastInsertId()], 201);
+    }
+
+    if ($method === 'POST' && $id !== null && ($segments[2] ?? null) === 'permissions') {
+        $data = parseJsonBody();
+        assignPermissionsToRole((int) $id, $data['permission_ids'] ?? []);
+        jsonResponse(['updated' => true]);
+    }
+
+    jsonResponse(['error' => 'Unsupported method.'], 405);
+}
+
+function assignPermissionsToRole(int $roleId, array $permissionIds): void
+{
+    $pdo = db();
+    $pdo->prepare('DELETE FROM permission_role WHERE role_id = :role_id')->execute(['role_id' => $roleId]);
+    $stmt = $pdo->prepare('INSERT INTO permission_role (permission_id, role_id, granted_at) VALUES (:permission_id, :role_id, :granted_at)');
+    foreach ($permissionIds as $permissionId) {
+        $stmt->execute([
+            'permission_id' => $permissionId,
+            'role_id' => $roleId,
+            'granted_at' => now(),
+        ]);
+    }
+}
+
+function handlePermissions(string $method, array $segments): void
+{
+    $pdo = db();
+
+    if ($method === 'GET') {
+        $stmt = $pdo->query('SELECT * FROM permissions ORDER BY name');
+        jsonResponse($stmt->fetchAll());
+    }
+
+    if ($method === 'POST') {
+        $data = parseJsonBody();
+        if (empty($data['name'])) {
+            jsonResponse(['error' => 'name is required.'], 422);
+        }
+
+        $stmt = $pdo->prepare('INSERT INTO permissions (name, description, created_at, updated_at) VALUES (:name, :description, :created_at, :updated_at)');
+        $stmt->execute([
+            'name' => $data['name'],
+            'description' => $data['description'] ?? null,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        jsonResponse(['id' => $pdo->lastInsertId()], 201);
+    }
+
+    jsonResponse(['error' => 'Unsupported method.'], 405);
+}
+
+function handleIntegrations(string $method, array $segments): void
+{
+    if ($method !== 'GET') {
+        jsonResponse(['error' => 'Only GET supported for integrations.'], 405);
+    }
+
+    $type = $segments[1] ?? null;
+    if ($type === null) {
+        jsonResponse([
+            'channel_manager' => ['status' => 'not_connected', 'providers' => ['booking.com', 'expedia']],
+            'door_lock' => ['status' => 'not_configured'],
+            'pos' => ['status' => 'not_configured'],
+            'accounting' => ['status' => 'not_configured'],
+        ]);
+    }
+
+    switch ($type) {
+        case 'channel-manager':
+            jsonResponse(['status' => 'not_connected', 'message' => 'No channel manager connected yet. Configure credentials to enable automatic distribution.']);
+        case 'door-locks':
+            jsonResponse(['status' => 'not_configured', 'message' => 'Door lock integration placeholder.']);
+        case 'pos':
+            jsonResponse(['status' => 'not_configured', 'message' => 'POS integration placeholder.']);
+        case 'accounting':
+            jsonResponse(['status' => 'not_configured', 'message' => 'Accounting export placeholder.']);
+    }
+
+    jsonResponse(['error' => 'Unknown integration.'], 404);
+}
+
+function handleGuestPortal(string $method, array $segments): void
+{
+    $sub = $segments[1] ?? null;
+    if ($sub !== 'reservations') {
+        jsonResponse(['error' => 'Unsupported guest portal resource.'], 404);
+    }
+
+    $confirmation = $segments[2] ?? null;
+    if ($confirmation === null) {
+        jsonResponse(['error' => 'Confirmation number required.'], 422);
+    }
+
+    $pdo = db();
+    $stmt = $pdo->prepare('SELECT r.*, g.first_name, g.last_name, g.email, g.company_id, c.name AS company_name FROM reservations r JOIN guests g ON g.id = r.guest_id LEFT JOIN companies c ON c.id = g.company_id WHERE r.confirmation_number = :confirmation');
+    $stmt->execute(['confirmation' => $confirmation]);
+    $reservation = $stmt->fetch();
+    if (!$reservation) {
+        jsonResponse(['error' => 'Reservation not found.'], 404);
+    }
+
+    $action = $segments[3] ?? null;
+    if ($method === 'GET' && $action === null) {
+        $reservation['rooms'] = fetchReservationRooms((int) $reservation['id']);
+        $reservation['documents'] = fetchReservationDocuments((int) $reservation['id']);
+        jsonResponse($reservation);
+    }
+
+    if ($method === 'POST' && $action === 'check-in') {
+        $data = parseJsonBody();
+        $data['notes'] = $data['notes'] ?? 'Guest self check-in';
+        handleReservationStatusChange((int) $reservation['id'], 'checked_in', $data);
+        return;
+    }
+
+    if ($method === 'POST' && $action === 'documents') {
+        $data = parseJsonBody();
+        addReservationDocument((int) $reservation['id'], $data);
+        return;
+    }
+
+    if ($method === 'POST' && $action === 'upsell') {
+        $data = parseJsonBody();
+        if (empty($data['service_type'])) {
+            jsonResponse(['error' => 'service_type is required.'], 422);
+        }
+        $stmt = $pdo->prepare('INSERT INTO service_orders (reservation_id, service_type, status, notes, created_at, updated_at) VALUES (:reservation_id, :service_type, :status, :notes, :created_at, :updated_at)');
+        $stmt->execute([
+            'reservation_id' => $reservation['id'],
+            'service_type' => $data['service_type'],
+            'status' => 'open',
+            'notes' => $data['notes'] ?? null,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+        jsonResponse(['service_order_id' => $pdo->lastInsertId()], 201);
+        return;
+    }
+
+    jsonResponse(['error' => 'Unsupported guest portal action.'], 405);
+}
+
+function handleSettings(string $method, array $segments): void
+{
+    $pdo = db();
+    $subresource = $segments[1] ?? null;
+
+    if ($subresource === null) {
+        if ($method === 'GET') {
+            jsonResponse([
+                'resources' => ['calendar-colors'],
+            ]);
+        }
+        jsonResponse(['error' => 'Unsupported method.'], 405);
+    }
+
+    if ($subresource === 'calendar-colors') {
+        if ($method === 'GET') {
+            jsonResponse(['colors' => getCalendarColorSettings($pdo)]);
+        }
+
+        if ($method === 'DELETE') {
+            clearCalendarColorSettings($pdo);
+            jsonResponse(['colors' => getCalendarColorSettings($pdo)]);
+        }
+
+        if ($method === 'POST' || $method === 'PUT' || $method === 'PATCH') {
+            $data = parseJsonBody();
+            $payload = [];
+            if (isset($data['colors']) && is_array($data['colors'])) {
+                $payload = $data['colors'];
+            } elseif (is_array($data)) {
+                $payload = $data;
+            }
+
+            if (!$payload) {
+                jsonResponse(['error' => 'No colors supplied.'], 422);
+            }
+
+            $normalized = [];
+            foreach ($payload as $status => $color) {
+                if (!in_array($status, CALENDAR_COLOR_STATUSES, true)) {
+                    continue;
+                }
+                $normalizedColor = normalizeHexColor((string) $color);
+                if ($normalizedColor === null) {
+                    jsonResponse(['error' => sprintf('Invalid colour value for %s', $status)], 422);
+                }
+                $normalized[$status] = $normalizedColor;
+            }
+
+            if (!$normalized) {
+                jsonResponse(['error' => 'No valid colours supplied.'], 422);
+            }
+
+            saveCalendarColorSettings($pdo, $normalized);
+            jsonResponse(['colors' => getCalendarColorSettings($pdo)]);
+        }
+
+        jsonResponse(['error' => 'Unsupported method.'], 405);
+    }
+
+    jsonResponse(['error' => 'Unknown settings resource.'], 404);
+}
+
+function generateConfirmationNumber(): string
+{
+    return strtoupper(bin2hex(random_bytes(4)));
+}
+
+function generateInvoiceNumber(): string
+{
+    return 'INV-' . date('Ymd') . '-' . strtoupper(bin2hex(random_bytes(3)));
+}
