@@ -85,6 +85,21 @@
         <details class="form-panel">
             <summary>Neue Reservierung anlegen</summary>
             <form id="reservation-form" class="grid-form">
+                <div id="reservation-meta" class="reservation-meta hidden">
+                    <div class="reservation-meta-block">
+                        <span class="meta-label">Reservierungsnummer</span>
+                        <span id="reservation-number" class="meta-value">--</span>
+                    </div>
+                    <div class="reservation-meta-block">
+                        <span class="meta-label">Rechnung</span>
+                        <div class="meta-actions">
+                            <a id="reservation-invoice-link" class="meta-link hidden" href="#" target="_blank" rel="noopener">PDF öffnen</a>
+                            <button type="button" id="reservation-create-invoice">Rechnung erstellen</button>
+                            <button type="button" id="reservation-pay-invoice" class="secondary">Als bezahlt verbuchen</button>
+                        </div>
+                        <p id="reservation-invoice-status" class="muted small-text"></p>
+                    </div>
+                </div>
                 <fieldset>
                     <legend>Aufenthalt</legend>
                     <label>Check-in

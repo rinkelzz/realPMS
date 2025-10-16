@@ -440,6 +440,55 @@ button.status-action:disabled:hover {
     gap: 1rem 1.5rem;
 }
 
+.reservation-meta {
+    grid-column: 1 / -1;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 1.5rem;
+    padding: .75rem 1rem;
+    border: 1px dashed var(--border);
+    border-radius: .75rem;
+    background: var(--surface-alt);
+    align-items: flex-start;
+}
+
+.reservation-meta-block {
+    display: flex;
+    flex-direction: column;
+    gap: .4rem;
+    min-width: 220px;
+}
+
+.meta-label {
+    font-size: .75rem;
+    font-weight: 600;
+    letter-spacing: .05em;
+    text-transform: uppercase;
+    color: var(--muted);
+}
+
+.meta-value {
+    font-size: 1.1rem;
+    font-weight: 700;
+}
+
+.meta-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: .5rem;
+    align-items: center;
+}
+
+.meta-link {
+    color: var(--primary);
+    font-weight: 600;
+    text-decoration: none;
+}
+
+.meta-link:hover {
+    text-decoration: underline;
+}
+
 .color-grid {
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));

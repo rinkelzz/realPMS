@@ -47,6 +47,7 @@ const state = {
     calendarColorTokens: {},
     calendarColorsLoaded: false,
     invoiceLogoDataUrl: null,
+    currentReservationInvoices: [],
 };
 
 const CALENDAR_DAYS = 14;
@@ -73,6 +74,12 @@ const reservationDetails = reservationForm ? reservationForm.closest('details') 
 const reservationSummary = reservationDetails ? reservationDetails.querySelector('summary') : null;
 const reservationSubmitButton = reservationForm ? reservationForm.querySelector('button[type="submit"]') : null;
 const reservationCancelButton = document.getElementById('reservation-cancel-edit');
+const reservationMeta = document.getElementById('reservation-meta');
+const reservationNumberEl = document.getElementById('reservation-number');
+const reservationInvoiceStatus = document.getElementById('reservation-invoice-status');
+const reservationInvoiceLink = document.getElementById('reservation-invoice-link');
+const reservationCreateInvoiceButton = document.getElementById('reservation-create-invoice');
+const reservationPayInvoiceButton = document.getElementById('reservation-pay-invoice');
 const reservationsList = document.getElementById('reservations-list');
 const reservationCapacityEl = document.getElementById('reservation-capacity');
 const reservationRoomsSelect = reservationForm ? reservationForm.querySelector('select[name="rooms"]') : null;
@@ -116,6 +123,13 @@ const RESERVATION_STATUS_LABELS = {
     checked_out: 'Abgereist',
     cancelled: 'Storniert',
     no_show: 'Nicht erschienen',
+};
+
+const INVOICE_STATUS_LABELS = {
+    draft: 'Entwurf',
+    issued: 'Offen',
+    paid: 'Bezahlt',
+    void: 'Storniert',
 };
 
 function showMessage(message, type = 'info', timeout = 4000) {
@@ -348,6 +362,67 @@ if (occupancyCalendarContainer) {
     });
 }
 
+if (reservationCreateInvoiceButton) {
+    reservationCreateInvoiceButton.addEventListener('click', async () => {
+        if (!state.editingReservationId) {
+            showMessage('Bitte wählen Sie zuerst eine Reservierung aus.', 'error');
+            return;
+        }
+        if (!requireToken()) {
+            return;
+        }
+        reservationCreateInvoiceButton.disabled = true;
+        try {
+            const invoice = await apiFetch(`reservations/${state.editingReservationId}/invoice`, { method: 'POST' });
+            const number = invoice?.invoice_number || invoice?.id || '';
+            showMessage(number ? `Rechnung ${number} erstellt.` : 'Rechnung erstellt.', 'success');
+            await Promise.all([
+                loadReservations(true),
+                loadBilling(true),
+            ]);
+            await startReservationEdit(state.editingReservationId);
+        } catch (error) {
+            reservationCreateInvoiceButton.disabled = false;
+            showMessage(error.message, 'error');
+        }
+    });
+}
+
+if (reservationPayInvoiceButton) {
+    reservationPayInvoiceButton.addEventListener('click', async () => {
+        if (!state.editingReservationId) {
+            showMessage('Bitte wählen Sie zuerst eine Reservierung aus.', 'error');
+            return;
+        }
+        if (!requireToken()) {
+            return;
+        }
+        const latestInvoice = state.currentReservationInvoices[0];
+        if (!latestInvoice) {
+            showMessage('Für diese Reservierung existiert noch keine Rechnung.', 'error');
+            return;
+        }
+        if (latestInvoice.status === 'paid') {
+            showMessage('Die Rechnung ist bereits als bezahlt erfasst.', 'info');
+            return;
+        }
+        reservationPayInvoiceButton.disabled = true;
+        try {
+            await apiFetch(`reservations/${state.editingReservationId}/invoice-pay`, { method: 'POST' });
+            showMessage('Zahlung verbucht und Rechnung aktualisiert.', 'success');
+            await Promise.all([
+                loadReservations(true),
+                loadBilling(true),
+                loadDashboard(true),
+            ]);
+            await startReservationEdit(state.editingReservationId);
+        } catch (error) {
+            reservationPayInvoiceButton.disabled = false;
+            showMessage(error.message, 'error');
+        }
+    });
+}
+
 function formatDate(value) {
     if (!value) {
         return '';
@@ -403,6 +478,84 @@ function formatArticleHint(article) {
     const price = formatCurrency(article.unit_price ?? 0, article.currency || 'EUR');
     const tax = Number(article.tax_rate ?? 0).toFixed(1);
     return `${scheme} · ${price} · MwSt ${tax}%`;
+}
+
+function updateReservationMeta(reservation = null) {
+    if (!reservationMeta) {
+        return;
+    }
+
+    if (!reservation) {
+        reservationMeta.classList.add('hidden');
+        state.currentReservationInvoices = [];
+        if (reservationNumberEl) {
+            reservationNumberEl.textContent = '--';
+        }
+        if (reservationInvoiceStatus) {
+            reservationInvoiceStatus.textContent = '';
+        }
+        if (reservationInvoiceLink) {
+            reservationInvoiceLink.href = '#';
+            reservationInvoiceLink.classList.add('hidden');
+        }
+        if (reservationCreateInvoiceButton) {
+            reservationCreateInvoiceButton.disabled = true;
+            reservationCreateInvoiceButton.textContent = 'Rechnung erstellen';
+        }
+        if (reservationPayInvoiceButton) {
+            reservationPayInvoiceButton.disabled = true;
+            reservationPayInvoiceButton.textContent = 'Als bezahlt verbuchen';
+        }
+        return;
+    }
+
+    reservationMeta.classList.remove('hidden');
+    state.currentReservationInvoices = Array.isArray(reservation.invoices) ? reservation.invoices : [];
+
+    if (reservationNumberEl) {
+        const confirmation = reservation.confirmation_number || `ID ${reservation.id}`;
+        reservationNumberEl.textContent = confirmation;
+    }
+
+    const latestInvoice = state.currentReservationInvoices[0] || null;
+    const reservationCurrency = reservation.currency || 'EUR';
+
+    if (reservationCreateInvoiceButton) {
+        reservationCreateInvoiceButton.disabled = false;
+        reservationCreateInvoiceButton.textContent = latestInvoice ? 'Neue Rechnung erstellen' : 'Rechnung erstellen';
+    }
+
+    if (latestInvoice && reservationInvoiceLink) {
+        reservationInvoiceLink.href = buildInvoicePdfUrl(latestInvoice.id);
+        reservationInvoiceLink.classList.remove('hidden');
+    } else if (reservationInvoiceLink) {
+        reservationInvoiceLink.href = '#';
+        reservationInvoiceLink.classList.add('hidden');
+    }
+
+    if (reservationInvoiceStatus) {
+        if (latestInvoice) {
+            const label = INVOICE_STATUS_LABELS[latestInvoice.status] || latestInvoice.status || 'Offen';
+            const amount = formatCurrency(latestInvoice.total_amount ?? 0, reservationCurrency);
+            const parts = [`Nr. ${latestInvoice.invoice_number || latestInvoice.id}`, label, amount];
+            if (latestInvoice.due_date) {
+                parts.push(`Fällig: ${formatDate(latestInvoice.due_date)}`);
+            }
+            reservationInvoiceStatus.textContent = parts.join(' · ');
+        } else {
+            reservationInvoiceStatus.textContent = 'Noch keine Rechnung erstellt.';
+        }
+    }
+
+    if (reservationPayInvoiceButton) {
+        if (latestInvoice && latestInvoice.status !== 'paid') {
+            reservationPayInvoiceButton.disabled = false;
+            reservationPayInvoiceButton.textContent = 'Als bezahlt verbuchen';
+        } else {
+            reservationPayInvoiceButton.disabled = true;
+            reservationPayInvoiceButton.textContent = latestInvoice ? 'Bereits bezahlt' : 'Als bezahlt verbuchen';
+        }
+    }
 }
 
 function buildInvoicePdfUrl(invoiceId) {
@@ -819,6 +972,7 @@ function resetReservationForm() {
     const wasOpen = reservationDetails ? reservationDetails.open : false;
     reservationForm.reset();
     state.editingReservationId = null;
+    state.currentReservationInvoices = [];
     if (reservationSummary) {
         reservationSummary.textContent = 'Neue Reservierung anlegen';
     }
@@ -838,6 +992,7 @@ function resetReservationForm() {
         reservationDetails.open = wasOpen;
     }
     updateReservationCapacityHint();
+    updateReservationMeta(null);
 }
 
 function fillReservationForm(reservation) {
@@ -891,6 +1046,7 @@ function fillReservationForm(reservation) {
     applyGuestToForm(guestSnapshot);
     renderReservationArticleOptions(reservation.articles || []);
     updateReservationCapacityHint();
+    updateReservationMeta(reservation);
 }
 
 async function startReservationEdit(reservationId) {

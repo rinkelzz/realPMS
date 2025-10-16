@@ -99,6 +99,46 @@ try {
     respond('Error updating reservation status log enum: ' . $exception->getMessage(), true, $results);
 }
 
+try {
+    if (!columnExists($pdo, 'invoices', 'correction_number')) {
+        $pdo->exec("ALTER TABLE invoices ADD COLUMN correction_number VARCHAR(100) NULL UNIQUE AFTER invoice_number");
+        $results[] = '✓ Added column `correction_number` to `invoices`';
+    } else {
+        $results[] = '• Column `correction_number` already present on `invoices`';
+    }
+
+    if (!columnExists($pdo, 'invoices', 'type')) {
+        $pdo->exec("ALTER TABLE invoices ADD COLUMN type ENUM('invoice','correction') NOT NULL DEFAULT 'invoice' AFTER correction_number");
+        $results[] = '✓ Added column `type` to `invoices`';
+    } else {
+        $results[] = '• Column `type` already present on `invoices`';
+    }
+
+    if (!columnExists($pdo, 'invoices', 'parent_invoice_id')) {
+        $pdo->exec('ALTER TABLE invoices ADD COLUMN parent_invoice_id BIGINT UNSIGNED NULL AFTER type');
+        $results[] = '✓ Added column `parent_invoice_id` to `invoices`';
+    } else {
+        $results[] = '• Column `parent_invoice_id` already present on `invoices`';
+    }
+
+    if (!foreignKeyExists($pdo, 'invoices', 'fk_invoices_parent')) {
+        $pdo->exec('ALTER TABLE invoices ADD CONSTRAINT fk_invoices_parent FOREIGN KEY (parent_invoice_id) REFERENCES invoices(id) ON DELETE SET NULL');
+        $results[] = '✓ Added foreign key `fk_invoices_parent`';
+    } else {
+        $results[] = '• Foreign key `fk_invoices_parent` already present';
+    }
+} catch (PDOException $exception) {
+    respond('Error updating invoice metadata columns: ' . $exception->getMessage(), true, $results);
+}
+
+try {
+    $results[] = ensureSequenceSeed($pdo, 'sequence_reservation', 'reservations');
+    $results[] = ensureSequenceSeed($pdo, 'sequence_invoice', 'invoices');
+    $results[] = ensureSequenceSeed($pdo, 'sequence_invoice_correction', 'invoices');
+} catch (PDOException $exception) {
+    respond('Error initialising numbering sequences: ' . $exception->getMessage(), true, $results);
+}
+
 respond('Installation completed successfully.', false, $results);
 
 /**
@@ -169,6 +209,46 @@ function loadDotEnv(string $path): array
     }
 
     return $values;
+}
+
+function ensureSequenceSeed(PDO $pdo, string $key, string $table, string $column = 'id'): string
+{
+    $stmt = $pdo->prepare('SELECT `value` FROM settings WHERE `key` = :key');
+    $stmt->execute(['key' => $key]);
+    $existing = $stmt->fetchColumn();
+
+    $maxQuery = sprintf('SELECT MAX(`%s`) FROM `%s`', $column, $table);
+    $maxStmt = $pdo->query($maxQuery);
+    $maxValue = $maxStmt ? (int) $maxStmt->fetchColumn() : 0;
+
+    $timestamp = date('Y-m-d H:i:s');
+
+    if ($existing === false) {
+        $seed = $maxValue > 0 ? $maxValue : 0;
+        $insert = $pdo->prepare('INSERT INTO settings (`key`, `value`, created_at, updated_at) VALUES (:key, :value, :created_at, :updated_at)');
+        $insert->execute([
+            'key' => $key,
+            'value' => (string) $seed,
+            'created_at' => $timestamp,
+            'updated_at' => $timestamp,
+        ]);
+
+        return sprintf('✓ Initialised sequence `%s` at %d', $key, $seed);
+    }
+
+    $current = (int) $existing;
+    if ($maxValue > $current) {
+        $update = $pdo->prepare('UPDATE settings SET `value` = :value, updated_at = :updated_at WHERE `key` = :key');
+        $update->execute([
+            'value' => (string) $maxValue,
+            'updated_at' => $timestamp,
+            'key' => $key,
+        ]);
+
+        return sprintf('✓ Raised sequence `%s` to %d', $key, $maxValue);
+    }
+
+    return sprintf('• Sequence `%s` already initialised', $key);
 }
 
 function columnExists(PDO $pdo, string $table, string $column): bool

@@ -634,6 +634,7 @@ function handleReservations(string $method, array $segments): void
             $reservation['documents'] = fetchReservationDocuments((int) $id);
             $reservation['status_history'] = fetchReservationStatusLogs((int) $id);
             $reservation['articles'] = fetchReservationArticles((int) $id);
+            $reservation['invoices'] = fetchInvoicesForReservation((int) $id);
             jsonResponse($reservation);
         }
 
@@ -913,6 +914,24 @@ function handleReservations(string $method, array $segments): void
         } elseif ($action === 'no-show') {
             $data = parseJsonBody();
             handleReservationStatusChange((int) $id, 'no_show', $data);
+        } elseif ($action === 'invoice') {
+            $data = parseJsonBody();
+            try {
+                $invoice = createReservationInvoice((int) $id, $data);
+                jsonResponse($invoice, 201);
+            } catch (Throwable $exception) {
+                $status = $exception instanceof InvalidArgumentException ? 422 : 500;
+                jsonResponse(['error' => $exception->getMessage()], $status);
+            }
+        } elseif ($action === 'invoice-pay') {
+            $data = parseJsonBody();
+            try {
+                $result = payReservationInvoice((int) $id, $data);
+                jsonResponse($result);
+            } catch (Throwable $exception) {
+                $status = $exception instanceof InvalidArgumentException ? 422 : 500;
+                jsonResponse(['error' => $exception->getMessage()], $status);
+            }
         } elseif ($action === 'documents') {
             $data = parseJsonBody();
             addReservationDocument((int) $id, $data);
@@ -945,15 +964,7 @@ function handleReservationStatusChange(int $reservationId, string $status, ?arra
 
     $pdo->beginTransaction();
     try {
-        $stmt = $pdo->prepare('UPDATE reservations SET status = :status, updated_at = :updated_at WHERE id = :id');
-        $stmt->execute([
-            'status' => $normalizedStatus,
-            'updated_at' => now(),
-            'id' => $reservationId,
-        ]);
-
-        logReservationStatus($pdo, $reservationId, $normalizedStatus, $notes, $recordedBy);
-        updateRoomsForReservationStatus($pdo, $reservationId, $normalizedStatus, $notes, $recordedBy);
+        applyReservationStatusChange($pdo, $reservationId, $normalizedStatus, $notes, $recordedBy);
 
         $pdo->commit();
     } catch (Throwable $exception) {
@@ -962,6 +973,19 @@ function handleReservationStatusChange(int $reservationId, string $status, ?arra
     }
 
     jsonResponse(['status' => $normalizedStatus]);
+}
+
+function applyReservationStatusChange(PDO $pdo, int $reservationId, string $status, ?string $notes, $recordedBy): void
+{
+    $stmt = $pdo->prepare('UPDATE reservations SET status = :status, updated_at = :updated_at WHERE id = :id');
+    $stmt->execute([
+        'status' => $status,
+        'updated_at' => now(),
+        'id' => $reservationId,
+    ]);
+
+    logReservationStatus($pdo, $reservationId, $status, $notes, $recordedBy);
+    updateRoomsForReservationStatus($pdo, $reservationId, $status, $notes, $recordedBy);
 }
 
 function validateReservationPayload(array $data): void
@@ -1741,6 +1765,20 @@ function handleInvoices(string $method, array $segments): void
         $issueDate = $data['issue_date'] ?? date('Y-m-d');
         $dueDate = $data['due_date'] ?? null;
         $status = $data['status'] ?? 'issued';
+        $type = isset($data['type']) ? strtolower((string) $data['type']) : 'invoice';
+        if (!in_array($type, ['invoice', 'correction'], true)) {
+            jsonResponse(['error' => 'Unsupported invoice type.'], 422);
+        }
+
+        $parentInvoiceId = null;
+        $correctionNumber = null;
+        if ($type === 'correction') {
+            $parentInvoiceId = isset($data['parent_invoice_id']) ? (int) $data['parent_invoice_id'] : null;
+            if (!$parentInvoiceId) {
+                jsonResponse(['error' => 'parent_invoice_id is required for corrections.'], 422);
+            }
+            $correctionNumber = $data['correction_number'] ?? generateInvoiceCorrectionNumber();
+        }
 
         $items = [];
         if (!empty($data['items']) && is_array($data['items'])) {
@@ -1748,7 +1786,12 @@ function handleInvoices(string $method, array $segments): void
         } else {
             $includeArticles = !isset($data['include_articles']) || filter_var($data['include_articles'], FILTER_VALIDATE_BOOLEAN);
             try {
-                $items = buildInvoiceItemsForReservation((int) $data['reservation_id'], $includeArticles);
+                if ($type === 'correction' && $parentInvoiceId) {
+                    $items = buildCorrectionItemsFromInvoice($parentInvoiceId);
+                }
+                if (!$items) {
+                    $items = buildInvoiceItemsForReservation((int) $data['reservation_id'], $includeArticles);
+                }
             } catch (Throwable $exception) {
                 jsonResponse(['error' => $exception->getMessage()], 422);
             }
@@ -1760,10 +1803,13 @@ function handleInvoices(string $method, array $segments): void
 
         $totals = calculateInvoiceTotals($items);
 
-        $stmt = $pdo->prepare('INSERT INTO invoices (reservation_id, invoice_number, issue_date, due_date, total_amount, tax_amount, status, created_at, updated_at) VALUES (:reservation_id, :invoice_number, :issue_date, :due_date, :total_amount, :tax_amount, :status, :created_at, :updated_at)');
+        $stmt = $pdo->prepare('INSERT INTO invoices (reservation_id, invoice_number, correction_number, type, parent_invoice_id, issue_date, due_date, total_amount, tax_amount, status, created_at, updated_at) VALUES (:reservation_id, :invoice_number, :correction_number, :type, :parent_invoice_id, :issue_date, :due_date, :total_amount, :tax_amount, :status, :created_at, :updated_at)');
         $stmt->execute([
             'reservation_id' => $data['reservation_id'],
             'invoice_number' => $invoiceNumber,
+            'correction_number' => $correctionNumber,
+            'type' => $type,
+            'parent_invoice_id' => $parentInvoiceId,
             'issue_date' => $issueDate,
             'due_date' => $dueDate,
             'total_amount' => $totals['total'],
@@ -1776,7 +1822,12 @@ function handleInvoices(string $method, array $segments): void
         $invoiceId = (int) $pdo->lastInsertId();
         storeInvoiceItems($invoiceId, $items);
 
-        jsonResponse(['id' => $invoiceId, 'invoice_number' => $invoiceNumber], 201);
+        jsonResponse([
+            'id' => $invoiceId,
+            'invoice_number' => $invoiceNumber,
+            'correction_number' => $correctionNumber,
+            'type' => $type,
+        ], 201);
     }
 
     jsonResponse(['error' => 'Unsupported method.'], 405);
@@ -1814,6 +1865,27 @@ function storeInvoiceItems(int $invoiceId, array $items): void
             'updated_at' => now(),
         ]);
     }
+}
+
+function buildCorrectionItemsFromInvoice(int $invoiceId): array
+{
+    $items = fetchInvoiceItems($invoiceId);
+    if (!$items) {
+        return [];
+    }
+
+    $corrections = [];
+    foreach ($items as $item) {
+        $quantity = (float) ($item['quantity'] ?? 0);
+        $corrections[] = [
+            'description' => $item['description'],
+            'quantity' => $quantity > 0 ? -$quantity : $quantity,
+            'unit_price' => (float) ($item['unit_price'] ?? 0),
+            'tax_rate' => isset($item['tax_rate']) ? (float) $item['tax_rate'] : null,
+        ];
+    }
+
+    return $corrections;
 }
 
 function calculateInvoiceTotals(array $items): array
@@ -1879,6 +1951,146 @@ function determineNightlyRate(array $room, array $reservation, int $nights): flo
     }
 
     return max(0.0, $nightlyRate);
+}
+
+function fetchInvoicesForReservation(int $reservationId): array
+{
+    $pdo = db();
+    $stmt = $pdo->prepare('SELECT * FROM invoices WHERE reservation_id = :id ORDER BY created_at DESC, id DESC');
+    $stmt->execute(['id' => $reservationId]);
+    $invoices = $stmt->fetchAll();
+    foreach ($invoices as &$invoice) {
+        $invoice['items'] = fetchInvoiceItems((int) $invoice['id']);
+    }
+    unset($invoice);
+
+    return $invoices;
+}
+
+function findLatestInvoiceForReservation(int $reservationId): ?array
+{
+    $invoices = fetchInvoicesForReservation($reservationId);
+    return $invoices[0] ?? null;
+}
+
+function createReservationInvoice(int $reservationId, array $payload = []): array
+{
+    $pdo = db();
+    $stmt = $pdo->prepare('SELECT id FROM reservations WHERE id = :id');
+    $stmt->execute(['id' => $reservationId]);
+    if ($stmt->fetchColumn() === false) {
+        throw new InvalidArgumentException('Reservierung wurde nicht gefunden.');
+    }
+
+    $includeArticles = !isset($payload['include_articles']) || filter_var($payload['include_articles'], FILTER_VALIDATE_BOOLEAN);
+    $items = buildInvoiceItemsForReservation($reservationId, $includeArticles);
+    if (!$items) {
+        throw new InvalidArgumentException('Für diese Reservierung sind keine abrechenbaren Posten hinterlegt.');
+    }
+
+    $invoiceNumber = $payload['invoice_number'] ?? generateInvoiceNumber();
+    $issueDate = $payload['issue_date'] ?? date('Y-m-d');
+    $dueDate = $payload['due_date'] ?? null;
+    $status = $payload['status'] ?? 'issued';
+
+    $totals = calculateInvoiceTotals($items);
+
+    $pdo->beginTransaction();
+    try {
+        $stmt = $pdo->prepare('INSERT INTO invoices (reservation_id, invoice_number, correction_number, type, parent_invoice_id, issue_date, due_date, total_amount, tax_amount, status, created_at, updated_at) VALUES (:reservation_id, :invoice_number, :correction_number, :type, :parent_invoice_id, :issue_date, :due_date, :total_amount, :tax_amount, :status, :created_at, :updated_at)');
+        $stmt->execute([
+            'reservation_id' => $reservationId,
+            'invoice_number' => $invoiceNumber,
+            'correction_number' => null,
+            'type' => 'invoice',
+            'parent_invoice_id' => null,
+            'issue_date' => $issueDate,
+            'due_date' => $dueDate,
+            'total_amount' => $totals['total'],
+            'tax_amount' => $totals['tax'],
+            'status' => $status,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        $invoiceId = (int) $pdo->lastInsertId();
+        storeInvoiceItems($invoiceId, $items);
+
+        $pdo->commit();
+
+        $invoice = getInvoiceWithRelations($invoiceId);
+        return $invoice ?? ['id' => $invoiceId, 'invoice_number' => $invoiceNumber];
+    } catch (Throwable $exception) {
+        $pdo->rollBack();
+        throw $exception;
+    }
+}
+
+function payReservationInvoice(int $reservationId, array $payload = []): array
+{
+    $pdo = db();
+    $invoice = findLatestInvoiceForReservation($reservationId);
+    if (!$invoice) {
+        throw new InvalidArgumentException('Es liegt noch keine Rechnung für diese Reservierung vor.');
+    }
+
+    if (($invoice['status'] ?? '') === 'paid') {
+        return ['invoice' => $invoice, 'message' => 'Rechnung bereits als bezahlt verbucht.'];
+    }
+
+    $amount = isset($payload['amount']) ? (float) $payload['amount'] : (float) ($invoice['total_amount'] ?? 0);
+    if ($amount <= 0) {
+        throw new InvalidArgumentException('Ungültiger Zahlungsbetrag.');
+    }
+
+    $method = $payload['method'] ?? 'cash';
+    $paidAt = $payload['paid_at'] ?? now();
+    $currency = $payload['currency'] ?? ($invoice['reservation_currency'] ?? 'EUR');
+    $notes = $payload['notes'] ?? null;
+    $recordedBy = $payload['recorded_by'] ?? null;
+
+    $pdo->beginTransaction();
+    try {
+        $stmt = $pdo->prepare('INSERT INTO payments (invoice_id, method, amount, currency, paid_at, reference, notes, created_at, updated_at) VALUES (:invoice_id, :method, :amount, :currency, :paid_at, :reference, :notes, :created_at, :updated_at)');
+        $stmt->execute([
+            'invoice_id' => $invoice['id'],
+            'method' => $method,
+            'amount' => $amount,
+            'currency' => $currency,
+            'paid_at' => $paidAt,
+            'reference' => $payload['reference'] ?? null,
+            'notes' => $notes,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        $update = $pdo->prepare('UPDATE invoices SET status = :status, updated_at = :updated_at WHERE id = :id');
+        $update->execute([
+            'status' => 'paid',
+            'updated_at' => now(),
+            'id' => $invoice['id'],
+        ]);
+
+        applyReservationStatusChange($pdo, $reservationId, 'paid', $notes, $recordedBy);
+
+        $pdo->commit();
+    } catch (Throwable $exception) {
+        $pdo->rollBack();
+        throw $exception;
+    }
+
+    $updatedInvoice = getInvoiceWithRelations((int) $invoice['id']);
+
+    return [
+        'invoice' => $updatedInvoice ?? $invoice,
+        'payment' => [
+            'invoice_id' => $invoice['id'],
+            'amount' => $amount,
+            'method' => $method,
+            'currency' => $currency,
+            'paid_at' => $paidAt,
+        ],
+    ];
 }
 
 function buildInvoiceItemsForReservation(int $reservationId, bool $includeArticles = true): array
@@ -2543,14 +2755,67 @@ function handleSettings(string $method, array $segments): void
     jsonResponse(['error' => 'Unknown settings resource.'], 404);
 }
 
+function generateReservationNumber(): string
+{
+    return formatSequenceNumber('RES-', nextSequenceValue('sequence_reservation'));
+}
+
 function generateConfirmationNumber(): string
 {
-    return strtoupper(bin2hex(random_bytes(4)));
+    return generateReservationNumber();
 }
 
 function generateInvoiceNumber(): string
 {
-    return 'INV-' . date('Ymd') . '-' . strtoupper(bin2hex(random_bytes(3)));
+    return formatSequenceNumber('INV-', nextSequenceValue('sequence_invoice'));
+}
+
+function generateInvoiceCorrectionNumber(): string
+{
+    return formatSequenceNumber('COR-', nextSequenceValue('sequence_invoice_correction'));
+}
+
+function nextSequenceValue(string $key, int $start = 1): int
+{
+    $pdo = db();
+    $pdo->beginTransaction();
+    try {
+        $stmt = $pdo->prepare('SELECT `value` FROM settings WHERE `key` = :key FOR UPDATE');
+        $stmt->execute(['key' => $key]);
+        $current = $stmt->fetchColumn();
+        if ($current === false) {
+            $next = $start;
+            $insert = $pdo->prepare('INSERT INTO settings (`key`, `value`, created_at, updated_at) VALUES (:key, :value, :created_at, :updated_at)');
+            $insert->execute([
+                'key' => $key,
+                'value' => (string) $next,
+                'created_at' => now(),
+                'updated_at' => now(),
+            ]);
+        } else {
+            $currentValue = (int) $current;
+            $next = max($start, $currentValue + 1);
+            $update = $pdo->prepare('UPDATE settings SET `value` = :value, updated_at = :updated_at WHERE `key` = :key');
+            $update->execute([
+                'value' => (string) $next,
+                'updated_at' => now(),
+                'key' => $key,
+            ]);
+        }
+
+        $pdo->commit();
+
+        return $next;
+    } catch (Throwable $exception) {
+        $pdo->rollBack();
+        throw $exception;
+    }
+}
+
+function formatSequenceNumber(string $prefix, int $number, int $padding = 6): string
+{
+    $padding = max(1, $padding);
+    return sprintf('%s%0' . $padding . 'd', $prefix, $number);
 }
 
 function pdfText(string $value): string
