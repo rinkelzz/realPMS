@@ -102,6 +102,8 @@ Nach dem erfolgreichen Datenbank-Setup stellt `backend/api/index.php` eine schla
 
 ### Fakturierung & Zahlungen
 - `POST /backend/api/invoices` – Erstellt Rechnungen mit beliebig vielen Positionen; Netto-/Steuer-/Brutto-Summen werden automatisch berechnet. Ohne eigene Nummer erhält jede neue Rechnung automatisch die nächste Sequenz (`INV-000001`, `INV-000002`, …). Mit `type: "correction"` plus `parent_invoice_id` erzeugst du Rechnungskorrekturen inklusive fortlaufender `correction_number` (`COR-000001`, …); Positionen der Ursprungrechnung werden dabei mit negativen Mengen übernommen.
+- `GET|POST|PATCH|DELETE /backend/api/invoice-carts/{reservationId}` – Pflegt den Warenkorb einer Reservierung, um Positionen gezielt für Teilrechnungen auszuwählen. Einzelne Posten lassen sich hinzufügen, aktualisieren oder löschen; beim Fakturieren werden sie automatisch als abgerechnet markiert.
+- `POST /backend/api/invoices/{id}/close` – Schließt eine Rechnung mit aktuellem Zeitstempel endgültig ab. Änderungen sind danach nur noch über Rechnungskorrekturen möglich.
 - `POST /backend/api/payments` – Verbucht Zahlungen (Bar, Karte, externes Gateway) und verknüpft sie mit Rechnungen.
 - `GET /backend/api/invoices/{id}/pdf` – Rendert die Rechnung als PDF (inkl. Rechnungslogo, Netto-/MwSt.-Ausweis und Artikellisten) über die mitgelieferte FPDF-Library.
   - **Wichtig:** Lade die Standard-Schriftdateien der FPDF-Library (z. B. `helvetica.php`, `courier.php`) manuell in `backend/lib/font/` hoch; sie sind aus lizenzrechtlichen Gründen nicht im Repository enthalten.
