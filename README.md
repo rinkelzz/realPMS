@@ -63,6 +63,7 @@ Neben der reinen API steht jetzt ein leichtgewichtiger Administrations-Client zu
 - Über den Button „Farben anpassen“ im Dashboard gelangst du direkt zu den Kalender-Einstellungen und kannst alle Status-Farben dauerhaft speichern oder zurücksetzen.
 - Die Reservierungsliste bietet farbige Schnellaktionen für Check-in, Zahlungseingang, Check-out und No-Show – ideal, um Gäste schnell als angereist, abgereist oder No-Show zu markieren.
 - Im Reservierungsformular kannst du aktive Artikel/Zusatzleistungen auswählen; Mengen werden automatisch mit der Zimmerkapazität abgeglichen.
+- Die Gastauswahl nutzt eine Live-Suche: Gib mindestens zwei Zeichen ein, um bestehende Gäste samt Firmenbezug zu finden – andernfalls legst du direkt einen neuen Gast über die Formularfelder an.
 - Öffnest du eine bestehende Reservierung, zeigt der Formularheader die neue fortlaufende Reservierungsnummer (`RES-000001`, `RES-000002`, …) sowie Schnellaktionen für „Rechnung erstellen“ und „Als bezahlt verbuchen“. Der PDF-Link steht nach der ersten Rechnung direkt bereit.
 - Der Fakturierungsbereich enthält ein Artikel-Panel samt CRUD-Funktionalität, eine Rechnungsmaske mit MwSt.-Berechnung sowie Direktlinks zum PDF-Export.
 - Unter „Einstellungen“ lässt sich das Rechnungslogo als PNG/JPEG hochladen; die Vorschau zeigt unmittelbar das spätere Layout auf der Rechnung.
@@ -91,7 +92,7 @@ Nach dem erfolgreichen Datenbank-Setup stellt `backend/api/index.php` eine schla
 - `POST /backend/api/reservations/{id}/invoice` – Erstellt auf Basis der Zimmerzuweisungen und Zusatzartikel automatisch eine Rechnung mit fortlaufender Nummer (`INV-000001`, `INV-000002`, …).
 - `POST /backend/api/reservations/{id}/invoice-pay` – Verbucht den offenen Betrag der zuletzt erstellten Rechnung, erzeugt einen Zahlungseintrag und setzt die Reservierung auf `paid`.
 - `POST /backend/api/reservations/{id}/documents` – Hinterlegt Meldescheine oder andere Dateien (es werden Metadaten gespeichert, die Dateiablage erfolgt extern).
-- `GET|POST|PATCH /backend/api/guests` – Verwalten von Gästestammdaten inklusive Firmenzuordnung und optionaler Suchfunktion via `?search=`.
+- `GET|POST|PATCH /backend/api/guests` – Verwalten von Gästestammdaten inklusive Firmenzuordnung und optionaler Suchfunktion via `?search=` (inkl. `&limit=` für performante Auto-Vervollständigung).
 - `GET|POST|PATCH /backend/api/companies` – Firmenstammdaten für Reisebüros, Unternehmen oder Agenturen; Gäste lassen sich diesen Einträgen zuweisen.
 
 ### Housekeeping & Maintenance

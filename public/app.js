@@ -92,7 +92,10 @@ const reservationPayInvoiceButton = document.getElementById('reservation-pay-inv
 const reservationsList = document.getElementById('reservations-list');
 const reservationCapacityEl = document.getElementById('reservation-capacity');
 const reservationRoomsSelect = reservationForm ? reservationForm.querySelector('select[name="rooms"]') : null;
-const guestSelect = reservationForm ? reservationForm.querySelector('select[name="guest_id"]') : null;
+const guestSearchInput = reservationForm ? reservationForm.querySelector('input[name="guest_search"]') : null;
+const guestIdInput = reservationForm ? reservationForm.querySelector('input[name="guest_id"]') : null;
+const guestSearchResults = document.getElementById('guest-search-results');
+const guestClearSelectionButton = document.getElementById('guest-clear-selection');
 const reservationGuestCompanySelect = reservationForm ? reservationForm.querySelector('select[name="guest_company"]') : null;
 const reservationArticleContainer = document.getElementById('reservation-article-options');
 const guestForm = document.getElementById('guest-form');
@@ -127,6 +130,9 @@ const invoiceStorageForm = document.getElementById('invoice-storage-form');
 const invoiceStoragePasswordNote = document.getElementById('invoice-storage-password-note');
 const invoiceStorageStatus = document.getElementById('invoice-storage-status');
 const invoiceStorageClearButton = document.getElementById('invoice-storage-clear');
+
+let guestLookupDebounceId = null;
+let guestLookupRequestId = 0;
 
 const RESERVATION_STATUS_LABELS = {
     tentative: 'Voranfrage',
@@ -286,7 +292,8 @@ function setToken(token) {
         state.editingGuestId = null;
         state.editingCompanyId = null;
         state.loadedSections.clear();
-        populateGuestSelect();
+        state.guestLookupResults = [];
+        state.guestLookupTerm = '';
         populateCompanyDropdowns();
         resetReservationForm();
         resetGuestForm();
@@ -996,32 +1003,155 @@ function startArticleEdit(articleId) {
     }
 }
 
-function populateGuestSelect() {
-    if (!guestSelect) {
+function formatGuestLabel(guest) {
+    const parts = [];
+    if (guest?.last_name) {
+        parts.push(guest.last_name);
+    }
+    if (guest?.first_name) {
+        parts.push(guest.first_name);
+    }
+    let label = parts.join(', ').trim();
+    if (!label && guest?.email) {
+        label = guest.email;
+    }
+    if (!label && guest?.phone) {
+        label = guest.phone;
+    }
+    if (!label && guest?.id) {
+        label = `Gast #${guest.id}`;
+    }
+    if (guest?.company_name) {
+        label = `${label}${label ? ' – ' : ''}${guest.company_name}`;
+    }
+    return label;
+}
+
+function hideGuestSuggestions() {
+    if (!guestSearchResults) {
         return;
     }
-    const currentValue = guestSelect.value;
-    const options = ['<option value="">Neuer Gast</option>'];
-    const sortedGuests = [...state.guests].sort((a, b) => {
-        const lastCompare = (a.last_name || '').localeCompare(b.last_name || '', 'de', { sensitivity: 'base' });
-        if (lastCompare !== 0) {
-            return lastCompare;
+    guestSearchResults.classList.add('hidden');
+    guestSearchResults.innerHTML = '';
+}
+
+function renderGuestSuggestions(results, term) {
+    if (!guestSearchResults) {
+        return;
+    }
+    const normalizedTerm = (term || '').trim();
+    if (!normalizedTerm) {
+        hideGuestSuggestions();
+        return;
+    }
+    if (!Array.isArray(results) || results.length === 0) {
+        guestSearchResults.innerHTML = '<p class="muted small-text">Keine Treffer</p>';
+        guestSearchResults.classList.remove('hidden');
+        return;
+    }
+    const items = results.map((guest) => {
+        const label = formatGuestLabel(guest);
+        const metaParts = [];
+        if (guest.email) {
+            metaParts.push(guest.email);
         }
-        return (a.first_name || '').localeCompare(b.first_name || '', 'de', { sensitivity: 'base' });
-    });
-    sortedGuests.forEach((guest) => {
-        const companyLabel = guest.company_name ? ` – ${guest.company_name}` : '';
-        options.push(`<option value="${guest.id}">${guest.last_name || ''}${guest.last_name && guest.first_name ? ', ' : ''}${guest.first_name || ''}${companyLabel}</option>`);
-    });
-    guestSelect.innerHTML = options.join('');
-    if (currentValue && [...guestSelect.options].some((option) => option.value === currentValue)) {
-        guestSelect.value = currentValue;
-    } else {
-        guestSelect.value = '';
+        if (guest.phone) {
+            metaParts.push(guest.phone);
+        }
+        const meta = metaParts.join(' · ');
+        return `
+            <button type="button" class="guest-suggestion" data-guest-id="${escapeHtml(String(guest.id))}">
+                <span class="guest-suggestion-name">${escapeHtml(label)}</span>
+                ${meta ? `<span class="guest-suggestion-meta">${escapeHtml(meta)}</span>` : ''}
+            </button>
+        `;
+    }).join('');
+    guestSearchResults.innerHTML = items;
+    guestSearchResults.classList.remove('hidden');
+}
+
+function setGuestSelection(guest) {
+    if (guestIdInput) {
+        guestIdInput.value = guest?.id ? String(guest.id) : '';
+    }
+    const label = guest ? formatGuestLabel(guest) : '';
+    if (guestSearchInput) {
+        guestSearchInput.value = label;
+        if (guest?.id) {
+            guestSearchInput.dataset.selectedId = String(guest.id);
+            guestSearchInput.dataset.selectedLabel = label;
+        } else {
+            delete guestSearchInput.dataset.selectedId;
+            delete guestSearchInput.dataset.selectedLabel;
+        }
+    }
+    if (guest?.id && !state.guests.some((entry) => Number(entry.id) === Number(guest.id))) {
+        state.guests.push({ ...guest });
+    }
+    fillGuestFields(guest);
+    if (guestClearSelectionButton) {
+        if (guest?.id) {
+            guestClearSelectionButton.classList.remove('hidden');
+        } else {
+            guestClearSelectionButton.classList.add('hidden');
+        }
     }
 }
 
-function applyGuestToForm(guest) {
+function clearGuestSelection() {
+    setGuestSelection(null);
+    hideGuestSuggestions();
+    if (guestSearchInput) {
+        guestSearchInput.focus();
+    }
+}
+
+async function performGuestLookup(term, requestId) {
+    const normalizedTerm = term.trim();
+    if (!normalizedTerm || normalizedTerm.length < 2) {
+        state.guestLookupResults = [];
+        state.guestLookupTerm = normalizedTerm;
+        hideGuestSuggestions();
+        return;
+    }
+    try {
+        const response = await apiFetch(`guests?search=${encodeURIComponent(normalizedTerm)}&limit=10`);
+        if (requestId !== guestLookupRequestId) {
+            return;
+        }
+        const currentValue = guestSearchInput ? guestSearchInput.value.trim() : '';
+        if (currentValue !== normalizedTerm) {
+            return;
+        }
+        state.guestLookupResults = Array.isArray(response) ? response : [];
+        state.guestLookupTerm = normalizedTerm;
+        renderGuestSuggestions(state.guestLookupResults, normalizedTerm);
+    } catch (error) {
+        if (requestId === guestLookupRequestId) {
+            hideGuestSuggestions();
+            showMessage(error.message, 'error');
+        }
+    }
+}
+
+function scheduleGuestLookup(term) {
+    if (guestLookupDebounceId) {
+        clearTimeout(guestLookupDebounceId);
+    }
+    const normalizedTerm = (term || '').trim();
+    if (!normalizedTerm || normalizedTerm.length < 2) {
+        state.guestLookupResults = [];
+        state.guestLookupTerm = normalizedTerm;
+        hideGuestSuggestions();
+        return;
+    }
+    guestLookupDebounceId = setTimeout(() => {
+        guestLookupRequestId += 1;
+        performGuestLookup(normalizedTerm, guestLookupRequestId);
+    }, 200);
+}
+
+function fillGuestFields(guest) {
     if (!reservationForm) {
         return;
     }
@@ -1053,10 +1183,10 @@ function resetReservationForm() {
     }
     populateRatePlanSelect();
     populateRoomOptions();
-    populateGuestSelect();
     populateCompanyDropdowns();
     renderReservationArticleOptions();
-    applyGuestToForm(null);
+    setGuestSelection(null);
+    hideGuestSuggestions();
     if (reservationDetails) {
         reservationDetails.open = wasOpen;
     }
@@ -1070,7 +1200,6 @@ function fillReservationForm(reservation) {
     }
     populateRatePlanSelect();
     populateRoomOptions();
-    populateGuestSelect();
     populateCompanyDropdowns();
 
     reservationForm.check_in.value = reservation.check_in_date ? reservation.check_in_date.slice(0, 10) : '';
@@ -1099,20 +1228,7 @@ function fillReservationForm(reservation) {
         company_name: reservation.company_name || null,
     };
 
-    if (reservation.guest_id) {
-        const existing = state.guests.find((guest) => Number(guest.id) === Number(reservation.guest_id));
-        if (!existing) {
-            state.guests.push({ id: reservation.guest_id, ...guestSnapshot });
-            populateGuestSelect();
-        }
-        if (guestSelect) {
-            guestSelect.value = String(reservation.guest_id);
-        }
-    } else if (guestSelect) {
-        guestSelect.value = '';
-    }
-
-    applyGuestToForm(guestSnapshot);
+    setGuestSelection(guestSnapshot);
     renderReservationArticleOptions(reservation.articles || []);
     updateReservationCapacityHint();
     updateReservationMeta(reservation);
@@ -1541,7 +1657,6 @@ async function bootstrap() {
         populateRoleCheckboxes();
         populateRoomTypeList();
         populateRatePlanList();
-        populateGuestSelect();
         populateCompanyDropdowns();
         renderArticlesTable();
         renderGuestsTable(guests);
@@ -1970,7 +2085,6 @@ async function loadGuests(force = false) {
             fetchCompanies(force),
         ]);
         state.guests = guests;
-        populateGuestSelect();
         populateCompanyDropdowns();
         renderGuestsTable(guests);
         state.loadedSections.add('guests');
@@ -2147,7 +2261,7 @@ if (reservationForm) {
             }
         }
 
-        const selectedGuestId = guestSelect && guestSelect.value ? Number(guestSelect.value) : null;
+        const selectedGuestId = guestIdInput && guestIdInput.value ? Number(guestIdInput.value) : null;
         const guestPayload = {
             first_name: reservationForm.guest_first.value,
             last_name: reservationForm.guest_last.value,
@@ -2226,14 +2340,69 @@ if (reservationForm) {
     reservationForm.children.addEventListener('input', updateReservationCapacityHint);
 }
 
-if (guestSelect) {
-    guestSelect.addEventListener('change', () => {
-        if (!guestSelect.value) {
-            applyGuestToForm(null);
+if (guestSearchInput) {
+    guestSearchInput.addEventListener('input', () => {
+        const currentValue = guestSearchInput.value;
+        const selectedLabel = guestSearchInput.dataset.selectedLabel || '';
+        if (guestSearchInput.dataset.selectedId && currentValue !== selectedLabel) {
+            delete guestSearchInput.dataset.selectedId;
+            delete guestSearchInput.dataset.selectedLabel;
+            if (guestIdInput) {
+                guestIdInput.value = '';
+            }
+            if (guestClearSelectionButton) {
+                guestClearSelectionButton.classList.add('hidden');
+            }
+        }
+        scheduleGuestLookup(currentValue);
+    });
+
+    guestSearchInput.addEventListener('focus', () => {
+        const term = guestSearchInput.value.trim();
+        if (term.length >= 2) {
+            if (state.guestLookupResults.length === 0 || state.guestLookupTerm !== term) {
+                scheduleGuestLookup(term);
+            } else {
+                renderGuestSuggestions(state.guestLookupResults, term);
+            }
+        }
+    });
+
+    guestSearchInput.addEventListener('blur', () => {
+        setTimeout(() => {
+            hideGuestSuggestions();
+        }, 150);
+    });
+}
+
+if (guestClearSelectionButton) {
+    guestClearSelectionButton.addEventListener('click', () => {
+        clearGuestSelection();
+    });
+}
+
+if (guestSearchResults) {
+    guestSearchResults.addEventListener('mousedown', (event) => {
+        event.preventDefault();
+    });
+    guestSearchResults.addEventListener('click', (event) => {
+        const target = event.target.closest('button[data-guest-id]');
+        if (!target) {
             return;
         }
-        const guest = state.guests.find((entry) => Number(entry.id) === Number(guestSelect.value));
-        applyGuestToForm(guest || null);
+        const guestId = Number(target.dataset.guestId);
+        if (!Number.isFinite(guestId)) {
+            return;
+        }
+        const guest = state.guestLookupResults.find((entry) => Number(entry.id) === guestId)
+            || state.guests.find((entry) => Number(entry.id) === guestId)
+            || null;
+        if (guest) {
+            setGuestSelection(guest);
+        } else if (guestIdInput) {
+            guestIdInput.value = String(guestId);
+        }
+        hideGuestSuggestions();
     });
 }
 
