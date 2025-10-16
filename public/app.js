@@ -2695,6 +2695,14 @@ if (reservationChildrenInput) {
     reservationChildrenInput.addEventListener('input', updateReservationCapacityHint);
 }
 
+if (reservationAdultsInput) {
+    reservationAdultsInput.addEventListener('input', updateReservationCapacityHint);
+}
+
+if (reservationChildrenInput) {
+    reservationChildrenInput.addEventListener('input', updateReservationCapacityHint);
+}
+
 if (reservationArticleContainer) {
     reservationArticleContainer.addEventListener('change', (event) => {
         const target = event.target;
