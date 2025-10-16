@@ -2081,7 +2081,14 @@ function populateRoleCheckboxes() {
 function populateRoomTypeList() {
     renderTable('room-types-list', [
         { key: 'name', label: 'Name' },
-        { key: 'base_rate', label: 'Grundpreis', render: (row) => formatCurrency(row.base_rate, row.currency || 'EUR') },
+        {
+            key: 'max_occupancy',
+            label: 'Max. Personen',
+            render: (row) => {
+                const capacity = Number(row.max_occupancy ?? row.base_occupancy ?? 0);
+                return capacity > 0 ? String(capacity) : '–';
+            },
+        },
     ], state.roomTypes);
 }
 
@@ -2695,14 +2702,6 @@ if (reservationChildrenInput) {
     reservationChildrenInput.addEventListener('input', updateReservationCapacityHint);
 }
 
-if (reservationAdultsInput) {
-    reservationAdultsInput.addEventListener('input', updateReservationCapacityHint);
-}
-
-if (reservationChildrenInput) {
-    reservationChildrenInput.addEventListener('input', updateReservationCapacityHint);
-}
-
 if (reservationArticleContainer) {
     reservationArticleContainer.addEventListener('change', (event) => {
         const target = event.target;
@@ -2839,11 +2838,15 @@ document.getElementById('room-type-form').addEventListener('submit', async (even
         return;
     }
     const form = event.target;
+    const maxOccupancy = form.max_occupancy.value ? Number(form.max_occupancy.value) : null;
     const payload = {
         name: form.name.value,
-        base_rate: form.base_price.value ? Number(form.base_price.value) : null,
         description: form.description.value || null,
     };
+    if (maxOccupancy && !Number.isNaN(maxOccupancy)) {
+        payload.max_occupancy = maxOccupancy;
+        payload.base_occupancy = maxOccupancy;
+    }
     try {
         await apiFetch('room-types', {
             method: 'POST',
