@@ -122,9 +122,6 @@ switch ($resource) {
     case 'invoices':
         handleInvoices($method, $segments);
         break;
-    case 'invoice-carts':
-        handleInvoiceCarts($method, $segments);
-        break;
     case 'payments':
         handlePayments($method, $segments);
         break;
@@ -644,6 +641,7 @@ function handleReservations(string $method, array $segments): void
                 jsonResponse(['error' => 'Reservation not found.'], 404);
             }
             $reservation['rooms'] = fetchReservationRooms((int) $id);
+            $reservation['room_requests'] = fetchReservationRoomRequests((int) $id, $pdo);
             $reservation['documents'] = fetchReservationDocuments((int) $id);
             $reservation['status_history'] = fetchReservationStatusLogs((int) $id);
             $reservation['articles'] = fetchReservationArticles((int) $id);
@@ -676,6 +674,7 @@ function handleReservations(string $method, array $segments): void
         $reservations = $stmt->fetchAll();
         foreach ($reservations as &$reservation) {
             $reservation['rooms'] = fetchReservationRooms((int) $reservation['id']);
+            $reservation['room_requests'] = fetchReservationRoomRequests((int) $reservation['id'], $pdo);
         }
         jsonResponse($reservations);
     }
@@ -685,6 +684,13 @@ function handleReservations(string $method, array $segments): void
         validateReservationPayload($data);
 
         $guestCount = calculateGuestCount($data['adults'] ?? 1, $data['children'] ?? 0);
+        $roomRequests = normalizeReservationRoomRequests($pdo, $data['room_requests'] ?? []);
+        if (empty($roomRequests) && (empty($data['rooms']) || !is_array($data['rooms']) || count($data['rooms']) === 0)) {
+            jsonResponse(['error' => 'Bitte mindestens eine Zimmerkategorie oder ein Zimmer zuweisen.'], 422);
+        }
+        if (!empty($roomRequests)) {
+            ensureRoomRequestCapacity($roomRequests, $guestCount);
+        }
 
         $pdo->beginTransaction();
         try {
@@ -722,16 +728,21 @@ function handleReservations(string $method, array $segments): void
             ]);
 
             $reservationId = (int) $pdo->lastInsertId();
-            $roomIds = extractRoomIdsFromSelection($data['rooms']);
-            assignRoomsToReservation(
-                $pdo,
-                $reservationId,
-                $data['rooms'] ?? [],
-                $data['check_in_date'],
-                $data['check_out_date'],
-                $guestCount
-            );
+            $roomIds = extractRoomIdsFromSelection($data['rooms'] ?? []);
+            if (!empty($roomIds)) {
+                assignRoomsToReservation(
+                    $pdo,
+                    $reservationId,
+                    $data['rooms'] ?? [],
+                    $data['check_in_date'],
+                    $data['check_out_date'],
+                    $guestCount
+                );
+            }
             $roomCount = count($roomIds);
+            if ($roomCount === 0) {
+                $roomCount = calculateRoomRequestQuantity($roomRequests);
+            }
             $articleSelections = isset($data['articles']) && is_array($data['articles']) ? $data['articles'] : [];
             syncReservationArticles(
                 $pdo,
@@ -742,6 +753,7 @@ function handleReservations(string $method, array $segments): void
                 $guestCount,
                 $roomCount
             );
+            syncReservationRoomRequests($pdo, $reservationId, $roomRequests);
             logReservationStatus($pdo, $reservationId, $statusValue, $data['status_notes'] ?? null, $data['recorded_by'] ?? null);
             updateRoomsForReservationStatus($pdo, $reservationId, $statusValue, $data['status_notes'] ?? null, $data['recorded_by'] ?? null);
 
@@ -784,14 +796,31 @@ function handleReservations(string $method, array $segments): void
         $roomSelection = !empty($data['rooms']) ? $data['rooms'] : fetchReservationRooms((int) $id);
         $roomIds = extractRoomIdsFromSelection($roomSelection);
         $roomCount = count($roomIds);
-        ensureRoomCapacity($pdo, $roomIds, $guestCount);
+        $existingRequests = fetchReservationRoomRequests((int) $id, $pdo);
+        $roomRequestsChanged = array_key_exists('room_requests', $data);
+        $roomRequests = $roomRequestsChanged
+            ? normalizeReservationRoomRequests($pdo, is_array($data['room_requests']) ? $data['room_requests'] : [])
+            : $existingRequests;
 
-        if (empty($data['rooms']) && (array_key_exists('check_in_date', $data) || array_key_exists('check_out_date', $data))) {
+        if ($roomCount > 0) {
+            ensureRoomCapacity($pdo, $roomIds, $guestCount);
+        } elseif (!empty($roomRequests)) {
+            ensureRoomRequestCapacity($roomRequests, $guestCount);
+        } else {
+            jsonResponse(['error' => 'Bitte mindestens eine Zimmerkategorie oder ein Zimmer zuweisen.'], 422);
+        }
+
+        if ($roomCount > 0 && empty($data['rooms']) && (array_key_exists('check_in_date', $data) || array_key_exists('check_out_date', $data))) {
             foreach ($roomIds as $roomId) {
                 if (!isRoomAvailable($pdo, $roomId, $targetCheckIn, $targetCheckOut, (int) $id)) {
                     jsonResponse(['error' => sprintf('Room %d is not available for the updated stay dates.', $roomId)], 422);
                 }
             }
+        }
+
+        $roomRequestCount = calculateRoomRequestQuantity($roomRequests);
+        if ($roomCount === 0) {
+            $roomCount = $roomRequestCount;
         }
 
         $roomsChanged = !empty($data['rooms']);
@@ -822,7 +851,7 @@ function handleReservations(string $method, array $segments): void
             }
         }
 
-        if (!$updates && empty($data['rooms']) && empty($data['guest'])) {
+        if (!$updates && empty($data['rooms']) && empty($data['guest']) && !$roomRequestsChanged) {
             jsonResponse(['error' => 'No changes supplied.'], 422);
         }
 
@@ -875,6 +904,10 @@ function handleReservations(string $method, array $segments): void
                 );
             }
 
+            if ($roomRequestsChanged) {
+                syncReservationRoomRequests($pdo, (int) $id, $roomRequests);
+            }
+
             if (array_key_exists('articles', $data)) {
                 $articleSelections = is_array($data['articles']) ? $data['articles'] : [];
                 syncReservationArticles(
@@ -886,7 +919,7 @@ function handleReservations(string $method, array $segments): void
                     $guestCount,
                     $roomCount
                 );
-            } elseif ($roomsChanged || $datesChanged || $guestChanged) {
+            } elseif ($roomsChanged || $datesChanged || $guestChanged || $roomRequestsChanged) {
                 recalculateReservationArticles(
                     $pdo,
                     (int) $id,
@@ -1021,8 +1054,12 @@ function validateReservationPayload(array $data): void
         }
     }
 
-    if (empty($data['rooms']) || !is_array($data['rooms'])) {
-        jsonResponse(['error' => 'rooms must be a non-empty array of room assignments.'], 422);
+    if (isset($data['rooms']) && !is_array($data['rooms'])) {
+        jsonResponse(['error' => 'rooms must be provided as an array when supplied.'], 422);
+    }
+
+    if (isset($data['room_requests']) && !is_array($data['room_requests'])) {
+        jsonResponse(['error' => 'room_requests must be provided as an array when supplied.'], 422);
     }
 
     $guestCount = calculateGuestCount($data['adults'] ?? 1, $data['children'] ?? 0);
@@ -1224,6 +1261,179 @@ function ensureRoomCapacity(PDO $pdo, array $roomIds, int $guestCount): void
             $guestCount
         ));
     }
+}
+
+function normalizeReservationRoomRequests(PDO $pdo, array $requests): array
+{
+    if (empty($requests)) {
+        return [];
+    }
+
+    $normalized = [];
+    $typeIds = [];
+    foreach ($requests as $request) {
+        if (!is_array($request)) {
+            jsonResponse(['error' => 'room_requests entries must be objects with room_type_id and quantity.'], 422);
+        }
+        $roomTypeId = isset($request['room_type_id']) ? (int) $request['room_type_id'] : 0;
+        if ($roomTypeId <= 0) {
+            jsonResponse(['error' => 'room_type_id is required for each room request.'], 422);
+        }
+        $quantity = isset($request['quantity']) ? (int) $request['quantity'] : 1;
+        if ($quantity <= 0) {
+            jsonResponse(['error' => 'quantity must be at least 1 for each room request.'], 422);
+        }
+        $normalized[] = [
+            'room_type_id' => $roomTypeId,
+            'quantity' => $quantity,
+        ];
+        $typeIds[$roomTypeId] = true;
+    }
+
+    $placeholders = implode(', ', array_fill(0, count($typeIds), '?'));
+    $stmt = $pdo->prepare("SELECT id, name, base_occupancy, max_occupancy FROM room_types WHERE id IN ($placeholders)");
+    $stmt->execute(array_keys($typeIds));
+    $roomTypes = [];
+    while ($row = $stmt->fetch()) {
+        $roomTypes[(int) $row['id']] = $row;
+    }
+
+    if (count($roomTypes) !== count($typeIds)) {
+        jsonResponse(['error' => 'Eine angegebene Zimmerkategorie wurde nicht gefunden.'], 422);
+    }
+
+    $aggregated = [];
+    foreach ($normalized as $entry) {
+        $type = $roomTypes[$entry['room_type_id']];
+        $capacity = (int) ($type['max_occupancy'] ?? 0);
+        if ($capacity <= 0) {
+            $capacity = (int) ($type['base_occupancy'] ?? 0);
+        }
+        if ($capacity <= 0) {
+            jsonResponse(['error' => sprintf('Für die Kategorie %s ist keine Kapazität hinterlegt.', $type['name'] ?? ('#' . $entry['room_type_id']))], 422);
+        }
+
+        if (!isset($aggregated[$entry['room_type_id']])) {
+            $aggregated[$entry['room_type_id']] = [
+                'room_type_id' => $entry['room_type_id'],
+                'quantity' => $entry['quantity'],
+                'room_type_name' => $type['name'] ?? null,
+                'capacity_per_unit' => $capacity,
+            ];
+        } else {
+            $aggregated[$entry['room_type_id']]['quantity'] += $entry['quantity'];
+        }
+    }
+
+    return array_values($aggregated);
+}
+
+function calculateRoomRequestCapacity(array $requests): int
+{
+    $total = 0;
+    foreach ($requests as $request) {
+        $capacity = (int) ($request['capacity_per_unit'] ?? 0);
+        $quantity = max(0, (int) ($request['quantity'] ?? 0));
+        if ($capacity > 0 && $quantity > 0) {
+            $total += $capacity * $quantity;
+        }
+    }
+
+    return $total;
+}
+
+function calculateRoomRequestQuantity(array $requests): int
+{
+    $total = 0;
+    foreach ($requests as $request) {
+        $total += max(0, (int) ($request['quantity'] ?? 0));
+    }
+
+    return $total;
+}
+
+function ensureRoomRequestCapacity(array $requests, int $guestCount): void
+{
+    if ($guestCount < 1) {
+        jsonResponse(['error' => 'At least one guest is required for a reservation.'], 422);
+    }
+
+    $capacity = calculateRoomRequestCapacity($requests);
+    if ($capacity <= 0) {
+        jsonResponse(['error' => 'Für die ausgewählten Kategorien ist keine Kapazität hinterlegt.'], 422);
+    }
+
+    if ($guestCount > $capacity) {
+        $labels = array_map(
+            static function (array $request): string {
+                $name = $request['room_type_name'] ?? ('Kategorie #' . $request['room_type_id']);
+                $quantity = max(1, (int) ($request['quantity'] ?? 1));
+                return sprintf('%s × %d', $name, $quantity);
+            },
+            $requests
+        );
+
+        jsonResponse([
+            'error' => sprintf(
+                'Die ausgewählten Kategorien (%s) bieten insgesamt Platz für %d Gäste, angefragt wurden jedoch %d.',
+                implode(', ', $labels),
+                $capacity,
+                $guestCount
+            ),
+        ], 422);
+    }
+}
+
+function syncReservationRoomRequests(PDO $pdo, int $reservationId, array $requests): void
+{
+    $pdo->prepare('DELETE FROM reservation_room_requests WHERE reservation_id = :id')->execute(['id' => $reservationId]);
+
+    if (empty($requests)) {
+        return;
+    }
+
+    $stmt = $pdo->prepare('INSERT INTO reservation_room_requests (reservation_id, room_type_id, quantity, created_at, updated_at) VALUES (:reservation_id, :room_type_id, :quantity, :created_at, :updated_at)');
+    foreach ($requests as $request) {
+        $stmt->execute([
+            'reservation_id' => $reservationId,
+            'room_type_id' => $request['room_type_id'],
+            'quantity' => max(1, (int) $request['quantity']),
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+    }
+}
+
+function fetchReservationRoomRequests(int $reservationId, ?PDO $pdo = null): array
+{
+    $pdo = $pdo ?? db();
+    $sql = <<<SQL
+        SELECT rrr.id, rrr.room_type_id, rrr.quantity, rt.name AS room_type_name, rt.base_occupancy, rt.max_occupancy
+        FROM reservation_room_requests rrr
+        JOIN room_types rt ON rt.id = rrr.room_type_id
+        WHERE rrr.reservation_id = :reservation_id
+        ORDER BY rt.name
+    SQL;
+    $stmt = $pdo->prepare($sql);
+    $stmt->execute(['reservation_id' => $reservationId]);
+    $records = $stmt->fetchAll();
+
+    return array_map(
+        static function (array $record): array {
+            $capacity = (int) ($record['max_occupancy'] ?? 0);
+            if ($capacity <= 0) {
+                $capacity = (int) ($record['base_occupancy'] ?? 0);
+            }
+            return [
+                'id' => $record['id'],
+                'room_type_id' => (int) $record['room_type_id'],
+                'quantity' => (int) $record['quantity'],
+                'room_type_name' => $record['room_type_name'],
+                'capacity_per_unit' => $capacity > 0 ? $capacity : null,
+            ];
+        },
+        $records
+    );
 }
 
 function createGuest(PDO $pdo, array $guest): int
@@ -1755,11 +1965,6 @@ function handleInvoices(string $method, array $segments): void
         return;
     }
 
-    if ($method === 'POST' && $id !== null && $action === 'close') {
-        closeInvoice((int) $id);
-        return;
-    }
-
     if ($method === 'GET') {
         if ($id !== null) {
             $invoice = getInvoiceWithRelations((int) $id);
@@ -1779,7 +1984,6 @@ function handleInvoices(string $method, array $segments): void
             jsonResponse(['error' => 'reservation_id is required.'], 422);
         }
 
-        $reservationId = (int) $data['reservation_id'];
         $invoiceNumber = $data['invoice_number'] ?? generateInvoiceNumber();
         $issueDate = $data['issue_date'] ?? date('Y-m-d');
         $dueDate = $data['due_date'] ?? null;
@@ -1796,57 +2000,23 @@ function handleInvoices(string $method, array $segments): void
             if (!$parentInvoiceId) {
                 jsonResponse(['error' => 'parent_invoice_id is required for corrections.'], 422);
             }
-
-            $parentInvoice = fetchInvoiceRow($parentInvoiceId);
-            if (!$parentInvoice) {
-                jsonResponse(['error' => 'Ausgangsrechnung wurde nicht gefunden.'], 404);
-            }
-            if ((int) $parentInvoice['reservation_id'] !== $reservationId) {
-                jsonResponse(['error' => 'Die angegebene parent_invoice_id gehört nicht zu dieser Reservierung.'], 422);
-            }
-            if (empty($parentInvoice['closed_at'])) {
-                jsonResponse(['error' => 'Die Ursprungrechnung muss vor einer Korrektur abgeschlossen werden.'], 422);
-            }
-
             $correctionNumber = $data['correction_number'] ?? generateInvoiceCorrectionNumber();
         }
 
         $items = [];
-        $cartItemIds = [];
         if (!empty($data['items']) && is_array($data['items'])) {
             $items = $data['items'];
         } else {
             $includeArticles = !isset($data['include_articles']) || filter_var($data['include_articles'], FILTER_VALIDATE_BOOLEAN);
-            if ($type !== 'correction') {
-                try {
-                    if (!empty($data['cart_item_ids']) && is_array($data['cart_item_ids'])) {
-                        $cartResult = collectCartItemsForInvoice($pdo, $reservationId, $data['cart_item_ids']);
-                        $items = $cartResult['items'];
-                        $cartItemIds = $cartResult['ids'];
-                    }
-                    if (!$items) {
-                        $cartResult = collectCartItemsForInvoice($pdo, $reservationId);
-                        if ($cartResult['items']) {
-                            $items = $cartResult['items'];
-                            $cartItemIds = $cartResult['ids'];
-                        }
-                    }
-                } catch (InvalidArgumentException $exception) {
-                    jsonResponse(['error' => $exception->getMessage()], 422);
+            try {
+                if ($type === 'correction' && $parentInvoiceId) {
+                    $items = buildCorrectionItemsFromInvoice($parentInvoiceId);
                 }
-            }
-
-            if (!$items) {
-                try {
-                    if ($type === 'correction' && $parentInvoiceId) {
-                        $items = buildCorrectionItemsFromInvoice($parentInvoiceId);
-                    }
-                    if (!$items) {
-                        $items = buildInvoiceItemsForReservation($reservationId, $includeArticles);
-                    }
-                } catch (Throwable $exception) {
-                    jsonResponse(['error' => $exception->getMessage()], 422);
+                if (!$items) {
+                    $items = buildInvoiceItemsForReservation((int) $data['reservation_id'], $includeArticles);
                 }
+            } catch (Throwable $exception) {
+                jsonResponse(['error' => $exception->getMessage()], 422);
             }
         }
 
@@ -1856,36 +2026,24 @@ function handleInvoices(string $method, array $segments): void
 
         $totals = calculateInvoiceTotals($items);
 
-        $pdo->beginTransaction();
-        try {
-            $stmt = $pdo->prepare('INSERT INTO invoices (reservation_id, invoice_number, correction_number, type, parent_invoice_id, issue_date, due_date, total_amount, tax_amount, status, created_at, updated_at) VALUES (:reservation_id, :invoice_number, :correction_number, :type, :parent_invoice_id, :issue_date, :due_date, :total_amount, :tax_amount, :status, :created_at, :updated_at)');
-            $stmt->execute([
-                'reservation_id' => $reservationId,
-                'invoice_number' => $invoiceNumber,
-                'correction_number' => $correctionNumber,
-                'type' => $type,
-                'parent_invoice_id' => $parentInvoiceId,
-                'issue_date' => $issueDate,
-                'due_date' => $dueDate,
-                'total_amount' => $totals['total'],
-                'tax_amount' => $totals['tax'],
-                'status' => $status,
-                'created_at' => now(),
-                'updated_at' => now(),
-            ]);
+        $stmt = $pdo->prepare('INSERT INTO invoices (reservation_id, invoice_number, correction_number, type, parent_invoice_id, issue_date, due_date, total_amount, tax_amount, status, created_at, updated_at) VALUES (:reservation_id, :invoice_number, :correction_number, :type, :parent_invoice_id, :issue_date, :due_date, :total_amount, :tax_amount, :status, :created_at, :updated_at)');
+        $stmt->execute([
+            'reservation_id' => $data['reservation_id'],
+            'invoice_number' => $invoiceNumber,
+            'correction_number' => $correctionNumber,
+            'type' => $type,
+            'parent_invoice_id' => $parentInvoiceId,
+            'issue_date' => $issueDate,
+            'due_date' => $dueDate,
+            'total_amount' => $totals['total'],
+            'tax_amount' => $totals['tax'],
+            'status' => $status,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
 
-            $invoiceId = (int) $pdo->lastInsertId();
-            storeInvoiceItems($invoiceId, $items);
-            if ($cartItemIds) {
-                markInvoiceCartItemsInvoiced($pdo, $cartItemIds, $invoiceId);
-            }
-
-            $pdo->commit();
-        } catch (Throwable $exception) {
-            $pdo->rollBack();
-            $statusCode = $exception instanceof InvalidArgumentException ? 422 : 500;
-            jsonResponse(['error' => $exception->getMessage()], $statusCode);
-        }
+        $invoiceId = (int) $pdo->lastInsertId();
+        storeInvoiceItems($invoiceId, $items);
 
         jsonResponse([
             'id' => $invoiceId,
@@ -1893,93 +2051,6 @@ function handleInvoices(string $method, array $segments): void
             'correction_number' => $correctionNumber,
             'type' => $type,
         ], 201);
-    }
-
-    jsonResponse(['error' => 'Unsupported method.'], 405);
-}
-
-function closeInvoice(int $invoiceId): void
-{
-    $pdo = db();
-    $stmt = $pdo->prepare('SELECT id, closed_at FROM invoices WHERE id = :id');
-    $stmt->execute(['id' => $invoiceId]);
-    $invoice = $stmt->fetch();
-    if (!$invoice) {
-        jsonResponse(['error' => 'Invoice not found.'], 404);
-    }
-    if (!empty($invoice['closed_at'])) {
-        jsonResponse(['error' => 'Diese Rechnung wurde bereits geschlossen.'], 409);
-    }
-
-    $timestamp = now();
-    $update = $pdo->prepare('UPDATE invoices SET closed_at = :closed_at, updated_at = :updated_at WHERE id = :id');
-    $update->execute([
-        'closed_at' => $timestamp,
-        'updated_at' => $timestamp,
-        'id' => $invoiceId,
-    ]);
-
-    $updatedInvoice = getInvoiceWithRelations($invoiceId);
-    jsonResponse($updatedInvoice ?? ['id' => $invoiceId, 'closed_at' => $timestamp]);
-}
-
-function handleInvoiceCarts(string $method, array $segments): void
-{
-    $pdo = db();
-    $reservationId = isset($segments[1]) ? (int) $segments[1] : 0;
-    if ($reservationId <= 0) {
-        jsonResponse(['error' => 'Reservierungs-ID erforderlich.'], 422);
-    }
-
-    $exists = $pdo->prepare('SELECT id FROM reservations WHERE id = :id');
-    $exists->execute(['id' => $reservationId]);
-    if ($exists->fetchColumn() === false) {
-        jsonResponse(['error' => 'Reservierung wurde nicht gefunden.'], 404);
-    }
-
-    $cart = ensureInvoiceCart($pdo, $reservationId);
-    $itemId = isset($segments[2]) ? (int) $segments[2] : null;
-
-    if ($method === 'GET') {
-        $items = fetchInvoiceCartItemsForCart($pdo, (int) $cart['id']);
-        jsonResponse([
-            'cart' => $cart,
-            'items' => $items,
-        ]);
-    }
-
-    if ($method === 'POST' && $itemId === null) {
-        $data = parseJsonBody();
-        try {
-            $item = createInvoiceCartItem($pdo, (int) $cart['id'], $data);
-            jsonResponse($item, 201);
-        } catch (InvalidArgumentException $exception) {
-            jsonResponse(['error' => $exception->getMessage()], 422);
-        }
-    }
-
-    if ($method === 'PATCH' && $itemId !== null) {
-        $data = parseJsonBody();
-        try {
-            $item = updateInvoiceCartItem($pdo, (int) $cart['id'], $itemId, $data);
-            jsonResponse($item);
-        } catch (InvalidArgumentException $exception) {
-            jsonResponse(['error' => $exception->getMessage()], 422);
-        }
-    }
-
-    if ($method === 'DELETE') {
-        if ($itemId !== null) {
-            try {
-                deleteInvoiceCartItem($pdo, (int) $cart['id'], $itemId);
-            } catch (InvalidArgumentException $exception) {
-                jsonResponse(['error' => $exception->getMessage()], 422);
-            }
-            jsonResponse(['deleted' => true]);
-        }
-
-        clearInvoiceCart($pdo, (int) $cart['id']);
-        jsonResponse(['deleted' => true]);
     }
 
     jsonResponse(['error' => 'Unsupported method.'], 405);
@@ -1993,15 +2064,6 @@ function fetchInvoiceItems(int $invoiceId): array
     return $stmt->fetchAll();
 }
 
-function calculateInvoiceLineTotal(float $quantity, float $unitPrice, ?float $taxRate): float
-{
-    $rate = $taxRate !== null ? (float) $taxRate : 0.0;
-    $subtotal = $quantity * $unitPrice;
-    $total = $subtotal * (1 + ($rate / 100));
-
-    return round($total, 2);
-}
-
 function storeInvoiceItems(int $invoiceId, array $items): void
 {
     $pdo = db();
@@ -2010,13 +2072,10 @@ function storeInvoiceItems(int $invoiceId, array $items): void
         if (empty($item['description'])) {
             throw new InvalidArgumentException('Each invoice item requires a description.');
         }
-        $quantity = round((float) ($item['quantity'] ?? 1), 2);
-        $unitPrice = round((float) ($item['unit_price'] ?? 0), 2);
+        $quantity = (float) ($item['quantity'] ?? 1);
+        $unitPrice = (float) ($item['unit_price'] ?? 0);
         $taxRate = isset($item['tax_rate']) ? (float) $item['tax_rate'] : null;
-        if ($taxRate !== null) {
-            $taxRate = round($taxRate, 2);
-        }
-        $total = calculateInvoiceLineTotal($quantity, $unitPrice, $taxRate);
+        $total = $quantity * $unitPrice * (1 + ($taxRate ?? 0) / 100);
 
         $stmt->execute([
             'invoice_id' => $invoiceId,
@@ -2029,277 +2088,6 @@ function storeInvoiceItems(int $invoiceId, array $items): void
             'updated_at' => now(),
         ]);
     }
-}
-
-function fetchInvoiceRow(int $invoiceId): ?array
-{
-    $pdo = db();
-    $stmt = $pdo->prepare('SELECT * FROM invoices WHERE id = :id');
-    $stmt->execute(['id' => $invoiceId]);
-    $invoice = $stmt->fetch();
-
-    return $invoice !== false ? $invoice : null;
-}
-
-function ensureInvoiceCart(PDO $pdo, int $reservationId): array
-{
-    $stmt = $pdo->prepare('SELECT * FROM invoice_carts WHERE reservation_id = :reservation_id LIMIT 1');
-    $stmt->execute(['reservation_id' => $reservationId]);
-    $cart = $stmt->fetch();
-    if ($cart) {
-        return $cart;
-    }
-
-    $timestamp = now();
-    $insert = $pdo->prepare('INSERT INTO invoice_carts (reservation_id, status, created_at, updated_at) VALUES (:reservation_id, :status, :created_at, :updated_at)');
-    $insert->execute([
-        'reservation_id' => $reservationId,
-        'status' => 'open',
-        'created_at' => $timestamp,
-        'updated_at' => $timestamp,
-    ]);
-
-    $id = (int) $pdo->lastInsertId();
-    return [
-        'id' => $id,
-        'reservation_id' => $reservationId,
-        'status' => 'open',
-        'created_at' => $timestamp,
-        'updated_at' => $timestamp,
-    ];
-}
-
-function fetchInvoiceCartItem(PDO $pdo, int $cartId, int $itemId): ?array
-{
-    $stmt = $pdo->prepare('SELECT * FROM invoice_cart_items WHERE id = :id AND cart_id = :cart_id');
-    $stmt->execute([
-        'id' => $itemId,
-        'cart_id' => $cartId,
-    ]);
-    $row = $stmt->fetch();
-    if (!$row) {
-        return null;
-    }
-
-    return normalizeInvoiceCartRow($row);
-}
-
-function fetchInvoiceCartItemsForCart(PDO $pdo, int $cartId): array
-{
-    $stmt = $pdo->prepare('SELECT * FROM invoice_cart_items WHERE cart_id = :cart_id AND invoiced_at IS NULL ORDER BY created_at, id');
-    $stmt->execute(['cart_id' => $cartId]);
-    $rows = $stmt->fetchAll();
-
-    if (!$rows) {
-        return [];
-    }
-
-    return array_map('normalizeInvoiceCartRow', $rows);
-}
-
-function normalizeInvoiceCartRow(array $row): array
-{
-    return [
-        'id' => (int) $row['id'],
-        'cart_id' => (int) $row['cart_id'],
-        'description' => $row['description'],
-        'quantity' => (float) $row['quantity'],
-        'unit_price' => (float) $row['unit_price'],
-        'tax_rate' => $row['tax_rate'] !== null ? (float) $row['tax_rate'] : null,
-        'total_amount' => isset($row['total_amount']) ? (float) $row['total_amount'] : calculateInvoiceLineTotal((float) $row['quantity'], (float) $row['unit_price'], $row['tax_rate'] !== null ? (float) $row['tax_rate'] : null),
-        'created_at' => $row['created_at'] ?? null,
-        'updated_at' => $row['updated_at'] ?? null,
-        'invoiced_at' => $row['invoiced_at'] ?? null,
-        'invoice_id' => isset($row['invoice_id']) ? (int) $row['invoice_id'] : null,
-    ];
-}
-
-function createInvoiceCartItem(PDO $pdo, int $cartId, array $payload): array
-{
-    $description = isset($payload['description']) ? trim((string) $payload['description']) : '';
-    if ($description === '') {
-        throw new InvalidArgumentException('Bitte eine Beschreibung hinterlegen.');
-    }
-    $quantity = isset($payload['quantity']) ? (float) $payload['quantity'] : 1.0;
-    if ($quantity <= 0) {
-        throw new InvalidArgumentException('Die Menge muss größer als 0 sein.');
-    }
-    $unitPrice = isset($payload['unit_price']) ? (float) $payload['unit_price'] : 0.0;
-    $taxRate = array_key_exists('tax_rate', $payload) && $payload['tax_rate'] !== null ? (float) $payload['tax_rate'] : null;
-    $total = calculateInvoiceLineTotal($quantity, $unitPrice, $taxRate);
-    $timestamp = now();
-
-    $stmt = $pdo->prepare('INSERT INTO invoice_cart_items (cart_id, description, quantity, unit_price, tax_rate, total_amount, created_at, updated_at) VALUES (:cart_id, :description, :quantity, :unit_price, :tax_rate, :total_amount, :created_at, :updated_at)');
-    $stmt->execute([
-        'cart_id' => $cartId,
-        'description' => $description,
-        'quantity' => round($quantity, 2),
-        'unit_price' => round($unitPrice, 2),
-        'tax_rate' => $taxRate !== null ? round($taxRate, 2) : null,
-        'total_amount' => $total,
-        'created_at' => $timestamp,
-        'updated_at' => $timestamp,
-    ]);
-
-    $itemId = (int) $pdo->lastInsertId();
-    $item = fetchInvoiceCartItem($pdo, $cartId, $itemId);
-    if (!$item) {
-        throw new RuntimeException('Warenkorbposition konnte nicht geladen werden.');
-    }
-
-    return $item;
-}
-
-function updateInvoiceCartItem(PDO $pdo, int $cartId, int $itemId, array $payload): array
-{
-    $existing = fetchInvoiceCartItem($pdo, $cartId, $itemId);
-    if (!$existing) {
-        throw new InvalidArgumentException('Warenkorbposition wurde nicht gefunden.');
-    }
-    if (!empty($existing['invoiced_at'])) {
-        throw new InvalidArgumentException('Diese Warenkorbposition wurde bereits einer Rechnung zugeordnet.');
-    }
-
-    $description = array_key_exists('description', $payload) ? trim((string) $payload['description']) : $existing['description'];
-    if ($description === '') {
-        throw new InvalidArgumentException('Bitte eine Beschreibung hinterlegen.');
-    }
-    $quantity = array_key_exists('quantity', $payload) ? (float) $payload['quantity'] : (float) $existing['quantity'];
-    if ($quantity <= 0) {
-        throw new InvalidArgumentException('Die Menge muss größer als 0 sein.');
-    }
-    $unitPrice = array_key_exists('unit_price', $payload) ? (float) $payload['unit_price'] : (float) $existing['unit_price'];
-    $taxRate = array_key_exists('tax_rate', $payload)
-        ? ($payload['tax_rate'] !== null ? (float) $payload['tax_rate'] : null)
-        : ($existing['tax_rate'] !== null ? (float) $existing['tax_rate'] : null);
-
-    $total = calculateInvoiceLineTotal($quantity, $unitPrice, $taxRate);
-    $timestamp = now();
-
-    $stmt = $pdo->prepare('UPDATE invoice_cart_items SET description = :description, quantity = :quantity, unit_price = :unit_price, tax_rate = :tax_rate, total_amount = :total_amount, updated_at = :updated_at WHERE id = :id AND cart_id = :cart_id');
-    $stmt->execute([
-        'description' => $description,
-        'quantity' => round($quantity, 2),
-        'unit_price' => round($unitPrice, 2),
-        'tax_rate' => $taxRate !== null ? round($taxRate, 2) : null,
-        'total_amount' => $total,
-        'updated_at' => $timestamp,
-        'id' => $itemId,
-        'cart_id' => $cartId,
-    ]);
-
-    $updated = fetchInvoiceCartItem($pdo, $cartId, $itemId);
-    if (!$updated) {
-        throw new RuntimeException('Aktualisierte Warenkorbposition konnte nicht geladen werden.');
-    }
-
-    return $updated;
-}
-
-function deleteInvoiceCartItem(PDO $pdo, int $cartId, int $itemId): void
-{
-    $item = fetchInvoiceCartItem($pdo, $cartId, $itemId);
-    if (!$item) {
-        throw new InvalidArgumentException('Warenkorbposition wurde nicht gefunden.');
-    }
-    if (!empty($item['invoiced_at'])) {
-        throw new InvalidArgumentException('Diese Warenkorbposition wurde bereits einer Rechnung zugeordnet.');
-    }
-
-    $stmt = $pdo->prepare('DELETE FROM invoice_cart_items WHERE id = :id AND cart_id = :cart_id');
-    $stmt->execute([
-        'id' => $itemId,
-        'cart_id' => $cartId,
-    ]);
-}
-
-function clearInvoiceCart(PDO $pdo, int $cartId): void
-{
-    $stmt = $pdo->prepare('DELETE FROM invoice_cart_items WHERE cart_id = :cart_id AND invoiced_at IS NULL');
-    $stmt->execute(['cart_id' => $cartId]);
-}
-
-function normalizeIdList(array $values): array
-{
-    $ids = [];
-    foreach ($values as $value) {
-        $id = (int) $value;
-        if ($id > 0) {
-            $ids[$id] = $id;
-        }
-    }
-
-    return array_values($ids);
-}
-
-function collectCartItemsForInvoice(PDO $pdo, int $reservationId, array $requestedIds = []): array
-{
-    $cart = ensureInvoiceCart($pdo, $reservationId);
-    $cartId = (int) $cart['id'];
-    $ids = normalizeIdList($requestedIds);
-
-    if ($ids) {
-        $placeholders = [];
-        $params = ['cart_id' => $cartId];
-        foreach ($ids as $index => $value) {
-            $placeholder = ':id' . $index;
-            $placeholders[] = $placeholder;
-            $params[substr($placeholder, 1)] = $value;
-        }
-        $sql = sprintf(
-            'SELECT * FROM invoice_cart_items WHERE cart_id = :cart_id AND invoiced_at IS NULL AND id IN (%s)',
-            implode(',', $placeholders)
-        );
-        $stmt = $pdo->prepare($sql);
-        $stmt->execute($params);
-        $rows = $stmt->fetchAll();
-        if (count($rows) !== count($ids)) {
-            throw new InvalidArgumentException('Die ausgewählten Warenkorbpositionen stehen nicht mehr zur Verfügung.');
-        }
-    } else {
-        $stmt = $pdo->prepare('SELECT * FROM invoice_cart_items WHERE cart_id = :cart_id AND invoiced_at IS NULL ORDER BY created_at, id');
-        $stmt->execute(['cart_id' => $cartId]);
-        $rows = $stmt->fetchAll();
-        $ids = array_map(static fn ($row) => (int) $row['id'], $rows);
-    }
-
-    $items = array_map('normalizeInvoiceCartRow', $rows);
-    $prepared = array_map(static function (array $item): array {
-        return [
-            'description' => $item['description'],
-            'quantity' => (float) $item['quantity'],
-            'unit_price' => (float) $item['unit_price'],
-            'tax_rate' => $item['tax_rate'],
-        ];
-    }, $items);
-
-    return ['items' => $prepared, 'ids' => $ids];
-}
-
-function markInvoiceCartItemsInvoiced(PDO $pdo, array $itemIds, int $invoiceId): void
-{
-    $ids = normalizeIdList($itemIds);
-    if (!$ids) {
-        return;
-    }
-
-    $placeholders = [];
-    $params = [
-        'invoice_id' => $invoiceId,
-        'timestamp' => now(),
-    ];
-    foreach ($ids as $index => $value) {
-        $placeholder = ':id' . $index;
-        $placeholders[] = $placeholder;
-        $params[substr($placeholder, 1)] = $value;
-    }
-
-    $sql = sprintf(
-        'UPDATE invoice_cart_items SET invoiced_at = :timestamp, invoice_id = :invoice_id, updated_at = :timestamp WHERE id IN (%s)',
-        implode(',', $placeholders)
-    );
-    $stmt = $pdo->prepare($sql);
-    $stmt->execute($params);
 }
 
 function buildCorrectionItemsFromInvoice(int $invoiceId): array
@@ -2365,6 +2153,7 @@ function fetchReservationBillingSnapshot(int $reservationId): array
     }
 
     $reservation['rooms'] = fetchReservationRooms($reservationId);
+    $reservation['room_requests'] = fetchReservationRoomRequests($reservationId, $pdo);
     $reservation['articles'] = fetchReservationArticles($reservationId);
 
     return $reservation;
@@ -2418,35 +2207,7 @@ function createReservationInvoice(int $reservationId, array $payload = []): arra
     }
 
     $includeArticles = !isset($payload['include_articles']) || filter_var($payload['include_articles'], FILTER_VALIDATE_BOOLEAN);
-    $items = [];
-    $cartItemIds = [];
-
-    if (!empty($payload['cart_item_ids']) && is_array($payload['cart_item_ids'])) {
-        try {
-            $cartResult = collectCartItemsForInvoice($pdo, $reservationId, $payload['cart_item_ids']);
-            $items = $cartResult['items'];
-            $cartItemIds = $cartResult['ids'];
-        } catch (InvalidArgumentException $exception) {
-            throw $exception;
-        }
-    }
-
-    if (!$items) {
-        try {
-            $cartResult = collectCartItemsForInvoice($pdo, $reservationId);
-            if ($cartResult['items']) {
-                $items = $cartResult['items'];
-                $cartItemIds = $cartResult['ids'];
-            }
-        } catch (InvalidArgumentException $exception) {
-            throw $exception;
-        }
-    }
-
-    if (!$items) {
-        $items = buildInvoiceItemsForReservation($reservationId, $includeArticles);
-    }
-
+    $items = buildInvoiceItemsForReservation($reservationId, $includeArticles);
     if (!$items) {
         throw new InvalidArgumentException('Für diese Reservierung sind keine abrechenbaren Posten hinterlegt.');
     }
@@ -2478,9 +2239,6 @@ function createReservationInvoice(int $reservationId, array $payload = []): arra
 
         $invoiceId = (int) $pdo->lastInsertId();
         storeInvoiceItems($invoiceId, $items);
-        if ($cartItemIds) {
-            markInvoiceCartItemsInvoiced($pdo, $cartItemIds, $invoiceId);
-        }
 
         $pdo->commit();
 
@@ -2734,20 +2492,10 @@ function outputInvoicePdf(int $invoiceId): void
     $pdf->Cell(array_sum($widths) - $widths[4], 8, '', 0, 0);
     $pdf->Cell($widths[4], 8, pdfText('Gesamt: ' . number_format($totalAmount, 2, ',', '.') . ' ' . $currency), 0, 1, 'R');
 
+    header('Content-Type: application/pdf');
     $filename = sprintf('Rechnung-%s.pdf', $invoice['invoice_number'] ?? $invoiceId);
-    $pdfBinary = $pdf->Output('S');
-
-    if (is_string($pdfBinary) && $pdfBinary !== '') {
-        uploadInvoicePdfToStorageBox($invoice, $filename, $pdfBinary);
-        header('Content-Type: application/pdf');
-        header('Content-Disposition: inline; filename="' . $filename . '"');
-        header('Content-Length: ' . strlen($pdfBinary));
-        echo $pdfBinary;
-    } else {
-        header('Content-Type: application/pdf');
-        header('Content-Disposition: inline; filename="' . $filename . '"');
-        $pdf->Output('I', $filename);
-    }
+    header('Content-Disposition: inline; filename="' . $filename . '"');
+    $pdf->Output('I', $filename);
     exit;
 }
 
@@ -3129,7 +2877,7 @@ function handleSettings(string $method, array $segments): void
     if ($subresource === null) {
         if ($method === 'GET') {
             jsonResponse([
-                'resources' => ['calendar-colors', 'invoice-logo', 'invoice-storage'],
+                'resources' => ['calendar-colors', 'invoice-logo'],
             ]);
         }
         jsonResponse(['error' => 'Unsupported method.'], 405);
@@ -3223,34 +2971,6 @@ function handleSettings(string $method, array $segments): void
                 'logo' => $dataUrl,
                 'updated_at' => $descriptor['updated_at'] ?? null,
             ]);
-        }
-
-        jsonResponse(['error' => 'Unsupported method.'], 405);
-    }
-
-    if ($subresource === 'invoice-storage') {
-        if ($method === 'GET') {
-            jsonResponse(getInvoiceStorageConfig());
-        }
-
-        if ($method === 'DELETE') {
-            jsonResponse(clearInvoiceStorageConfig());
-        }
-
-        if ($method === 'POST' || $method === 'PUT' || $method === 'PATCH') {
-            $data = parseJsonBody();
-            if (!is_array($data)) {
-                $data = [];
-            }
-            try {
-                $settings = saveInvoiceStorageConfig($data);
-            } catch (InvalidArgumentException $exception) {
-                jsonResponse(['error' => $exception->getMessage()], 422);
-            } catch (RuntimeException $exception) {
-                jsonResponse(['error' => $exception->getMessage()], 422);
-            }
-
-            jsonResponse($settings);
         }
 
         jsonResponse(['error' => 'Unsupported method.'], 405);
@@ -3480,264 +3200,4 @@ function deleteInvoiceLogo(): void
     setSetting('invoice_logo_path', null);
     setSetting('invoice_logo_mime', null);
     setSetting('invoice_logo_updated_at', null);
-}
-
-function normalizeInvoiceStorageBaseUrl(string $baseUrl): string
-{
-    $trimmed = trim($baseUrl);
-    if ($trimmed === '') {
-        return '';
-    }
-
-    if (!preg_match('#^https?://#i', $trimmed)) {
-        $trimmed = 'https://' . ltrim($trimmed, '/');
-    }
-
-    $parts = parse_url($trimmed);
-    if ($parts === false || empty($parts['scheme']) || empty($parts['host'])) {
-        throw new InvalidArgumentException('Ungültige WebDAV-URL für die Storage Box.');
-    }
-
-    $scheme = strtolower($parts['scheme']);
-    if (!in_array($scheme, ['http', 'https'], true)) {
-        throw new InvalidArgumentException('Die Storage-Box-URL muss mit http:// oder https:// beginnen.');
-    }
-
-    $host = strtolower($parts['host']);
-    $normalized = $scheme . '://' . $host;
-    if (isset($parts['port']) && $parts['port']) {
-        $normalized .= ':' . (int) $parts['port'];
-    }
-    if (isset($parts['path']) && $parts['path'] !== '') {
-        $normalized .= rtrim($parts['path'], '/');
-    }
-
-    return $normalized;
-}
-
-function normalizeInvoiceStorageDirectory(string $path): array
-{
-    $trimmed = trim($path);
-    if ($trimmed === '') {
-        return [];
-    }
-
-    $normalized = preg_replace('#/+#', '/', str_replace('\\', '/', $trimmed));
-    $segments = array_filter(explode('/', trim((string) $normalized, '/')), 'strlen');
-    $safeSegments = [];
-    foreach ($segments as $segment) {
-        if ($segment === '.' || $segment === '..') {
-            throw new InvalidArgumentException('Der Unterordner darf keine relativen Pfade enthalten.');
-        }
-        $safeSegments[] = $segment;
-    }
-
-    return $safeSegments;
-}
-
-function invoiceStorageDirectorySegments(?string $path): array
-{
-    if ($path === null || $path === '') {
-        return [];
-    }
-
-    return normalizeInvoiceStorageDirectory($path);
-}
-
-function getInvoiceStorageConfig(bool $includeSensitive = false): array
-{
-    $enabled = filter_var(getSetting('invoice_storage_enabled'), FILTER_VALIDATE_BOOLEAN);
-    $baseUrl = getSetting('invoice_storage_base_url') ?? '';
-    $directory = getSetting('invoice_storage_directory') ?? '';
-    $username = getSetting('invoice_storage_username') ?? '';
-    $passwordValue = getSetting('invoice_storage_password');
-
-    $config = [
-        'enabled' => (bool) $enabled,
-        'base_url' => $baseUrl,
-        'directory' => $directory,
-        'username' => $username,
-        'password_set' => $passwordValue !== null && $passwordValue !== '',
-    ];
-
-    if ($includeSensitive) {
-        $config['password'] = $passwordValue ?? '';
-    }
-
-    return $config;
-}
-
-function saveInvoiceStorageConfig(array $payload): array
-{
-    $enabled = !empty($payload['enabled']);
-    $baseUrlInput = isset($payload['base_url']) ? (string) $payload['base_url'] : '';
-    $directoryInput = isset($payload['directory']) ? (string) $payload['directory'] : '';
-    $username = isset($payload['username']) ? trim((string) $payload['username']) : '';
-    $passwordProvided = array_key_exists('password', $payload);
-    $password = $passwordProvided ? (string) $payload['password'] : '';
-
-    $normalizedBaseUrl = '';
-    if ($baseUrlInput !== '') {
-        $normalizedBaseUrl = normalizeInvoiceStorageBaseUrl($baseUrlInput);
-    }
-
-    $normalizedDirectory = '';
-    if ($directoryInput !== '') {
-        $segments = normalizeInvoiceStorageDirectory($directoryInput);
-        $normalizedDirectory = implode('/', $segments);
-    }
-
-    if ($enabled) {
-        if ($normalizedBaseUrl === '') {
-            throw new InvalidArgumentException('Bitte geben Sie die WebDAV-Basis-URL Ihrer Storage Box an.');
-        }
-        if ($username === '') {
-            throw new InvalidArgumentException('Bitte geben Sie den Storage-Box-Benutzernamen an.');
-        }
-        if ($passwordProvided) {
-            if ($password === '') {
-                throw new InvalidArgumentException('Das Storage-Box-Passwort darf nicht leer sein.');
-            }
-        } else {
-            $currentPassword = getSetting('invoice_storage_password');
-            if ($currentPassword === null || $currentPassword === '') {
-                throw new InvalidArgumentException('Bitte geben Sie das Storage-Box-Passwort an.');
-            }
-        }
-    }
-
-    setSetting('invoice_storage_enabled', $enabled ? '1' : '0');
-    setSetting('invoice_storage_base_url', $normalizedBaseUrl !== '' ? $normalizedBaseUrl : null);
-    setSetting('invoice_storage_directory', $normalizedDirectory !== '' ? $normalizedDirectory : null);
-    setSetting('invoice_storage_username', $username !== '' ? $username : null);
-
-    if ($passwordProvided) {
-        setSetting('invoice_storage_password', $password !== '' ? $password : null);
-    }
-
-    return getInvoiceStorageConfig();
-}
-
-function clearInvoiceStorageConfig(): array
-{
-    setSetting('invoice_storage_enabled', null);
-    setSetting('invoice_storage_base_url', null);
-    setSetting('invoice_storage_directory', null);
-    setSetting('invoice_storage_username', null);
-    setSetting('invoice_storage_password', null);
-
-    return getInvoiceStorageConfig();
-}
-
-function webdavRequest(string $method, string $url, string $username, string $password, ?string $body = null, array $headers = []): array
-{
-    if (!function_exists('curl_init')) {
-        throw new RuntimeException('cURL-Unterstützung ist für den Storage-Box-Upload erforderlich.');
-    }
-
-    $ch = curl_init($url);
-    if ($ch === false) {
-        throw new RuntimeException('Konnte keine Verbindung zur Storage Box herstellen.');
-    }
-
-    curl_setopt($ch, CURLOPT_CUSTOMREQUEST, $method);
-    curl_setopt($ch, CURLOPT_USERPWD, $username . ':' . $password);
-    curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-    curl_setopt($ch, CURLOPT_FOLLOWLOCATION, true);
-    curl_setopt($ch, CURLOPT_MAXREDIRS, 3);
-    curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, 10);
-    curl_setopt($ch, CURLOPT_TIMEOUT, 20);
-
-    if ($body !== null) {
-        curl_setopt($ch, CURLOPT_POSTFIELDS, $body);
-        $headers[] = 'Content-Length: ' . strlen($body);
-    }
-
-    if (!array_filter($headers, static function ($value) {
-        $lower = strtolower((string) $value);
-        return strpos($lower, 'expect') === 0;
-    })) {
-        $headers[] = 'Expect:';
-    }
-
-    if ($headers) {
-        curl_setopt($ch, CURLOPT_HTTPHEADER, $headers);
-    }
-
-    $responseBody = curl_exec($ch);
-    if ($responseBody === false) {
-        $error = curl_error($ch);
-        curl_close($ch);
-        throw new RuntimeException('Storage-Box-Anfrage fehlgeschlagen: ' . $error);
-    }
-
-    $statusCode = (int) curl_getinfo($ch, CURLINFO_RESPONSE_CODE);
-    curl_close($ch);
-
-    return [$statusCode, $responseBody];
-}
-
-function ensureWebdavDirectories(string $baseUrl, array $segments, string $username, string $password): void
-{
-    if (!$segments) {
-        return;
-    }
-
-    $base = rtrim($baseUrl, '/');
-    $current = [];
-    foreach ($segments as $segment) {
-        $current[] = $segment;
-        $encodedPath = implode('/', array_map('rawurlencode', $current));
-        $url = $base . '/' . $encodedPath;
-        try {
-            [$status] = webdavRequest('MKCOL', $url, $username, $password);
-        } catch (RuntimeException $exception) {
-            throw new RuntimeException('Ordner konnte nicht erstellt werden: ' . $exception->getMessage());
-        }
-
-        if ($status >= 400 && !in_array($status, [405, 301, 302], true)) {
-            throw new RuntimeException('Ordner konnte nicht erstellt werden (HTTP ' . $status . ').');
-        }
-    }
-}
-
-function uploadInvoicePdfToStorageBox(array $invoice, string $filename, string $binary): void
-{
-    try {
-        $config = getInvoiceStorageConfig(true);
-    } catch (Throwable $exception) {
-        error_log('Storage-Box-Konfiguration konnte nicht gelesen werden: ' . $exception->getMessage());
-        return;
-    }
-
-    if (empty($config['enabled'])) {
-        return;
-    }
-
-    $baseUrl = isset($config['base_url']) ? trim((string) $config['base_url']) : '';
-    $username = isset($config['username']) ? trim((string) $config['username']) : '';
-    $password = isset($config['password']) ? (string) $config['password'] : '';
-    if ($baseUrl === '' || $username === '' || $password === '') {
-        return;
-    }
-
-    $directorySegments = invoiceStorageDirectorySegments($config['directory'] ?? '');
-    $targetBase = rtrim($baseUrl, '/');
-
-    try {
-        if ($directorySegments) {
-            ensureWebdavDirectories($targetBase, $directorySegments, $username, $password);
-            $targetBase .= '/' . implode('/', array_map('rawurlencode', $directorySegments));
-        }
-
-        $targetUrl = $targetBase . '/' . rawurlencode($filename);
-        [$status] = webdavRequest('PUT', $targetUrl, $username, $password, $binary, ['Content-Type: application/pdf']);
-        if ($status >= 400) {
-            throw new RuntimeException('Upload fehlgeschlagen (HTTP ' . $status . ').');
-        }
-    } catch (Throwable $exception) {
-        $reference = $invoice['invoice_number'] ?? ($invoice['id'] ?? '');
-        $refLabel = $reference !== '' ? ' ' . $reference : '';
-        error_log('Rechnung' . $refLabel . ' konnte nicht in die Storage Box hochgeladen werden: ' . $exception->getMessage());
-    }
 }

@@ -406,6 +406,80 @@ button.status-action:disabled:hover {
     background-image: repeating-linear-gradient(135deg, rgba(255, 255, 255, 0.28) 0 12px, transparent 12px 24px);
 }
 
+.calendar-table td.occupied.multi {
+    background: var(--surface);
+    color: inherit;
+    border-color: rgba(15, 23, 42, 0.1);
+}
+
+.calendar-entry {
+    display: block;
+    padding: 4px 6px;
+    margin: 2px 0;
+    border-radius: 6px;
+    background: rgba(15, 23, 42, 0.08);
+    color: inherit;
+    font-weight: 600;
+    cursor: pointer;
+    border: 1px solid transparent;
+}
+
+.calendar-entry + .calendar-entry {
+    margin-top: 4px;
+}
+
+.calendar-entry.status-tentative {
+    background: var(--calendar-color-tentative);
+    color: var(--calendar-text-tentative);
+    border-color: var(--calendar-border-tentative);
+}
+
+.calendar-entry.status-confirmed {
+    background: var(--calendar-color-confirmed);
+    color: var(--calendar-text-confirmed);
+    border-color: var(--calendar-border-confirmed);
+}
+
+.calendar-entry.status-checked_in {
+    background: var(--calendar-color-checked_in);
+    color: var(--calendar-text-checked_in);
+    border-color: var(--calendar-border-checked_in);
+}
+
+.calendar-entry.status-paid {
+    background: var(--calendar-color-paid);
+    color: var(--calendar-text-paid);
+    border-color: var(--calendar-border-paid);
+}
+
+.calendar-entry.status-checked_out {
+    background: var(--calendar-color-checked_out);
+    color: var(--calendar-text-checked_out);
+    border-color: var(--calendar-border-checked_out);
+}
+
+.calendar-entry.status-cancelled {
+    background: var(--calendar-color-cancelled);
+    color: var(--calendar-text-cancelled);
+    border-color: var(--calendar-border-cancelled);
+}
+
+.calendar-entry.status-no_show {
+    background: var(--calendar-color-no_show);
+    color: var(--calendar-text-no_show);
+    border-color: var(--calendar-border-no_show);
+    background-image: repeating-linear-gradient(135deg, rgba(255, 255, 255, 0.28) 0 12px, transparent 12px 24px);
+}
+
+.calendar-entry.overbooking {
+    opacity: 0.95;
+}
+
+.overbooking-row th.room {
+    background: rgba(15, 23, 42, 0.06);
+    font-weight: 600;
+}
+
 .calendar-table th.today,
 .calendar-table td.today {
     box-shadow: inset 0 0 0 2px rgba(37, 99, 235, 0.35);
@@ -462,74 +536,6 @@ button.status-action:disabled:hover {
     flex-direction: column;
     gap: .4rem;
     min-width: 220px;
-}
-
-.meta-list {
-    list-style: none;
-    margin: 0;
-    padding: 0;
-    display: flex;
-    flex-direction: column;
-    gap: .35rem;
-}
-
-.meta-list li {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: .5rem;
-    background: var(--surface);
-    border: 1px solid var(--border);
-    border-radius: .6rem;
-    padding: .4rem .65rem;
-}
-
-.meta-list li.meta-list-empty {
-    background: none;
-    border: none;
-    padding: 0;
-    justify-content: flex-start;
-}
-
-.meta-list label {
-    display: flex;
-    align-items: center;
-    gap: .5rem;
-    flex: 1;
-}
-
-.meta-list input[type="checkbox"] {
-    accent-color: var(--primary);
-}
-
-.cart-form {
-    display: flex;
-    flex-direction: column;
-    gap: .75rem;
-    padding: .75rem;
-    border: 1px solid var(--border);
-    border-radius: .75rem;
-    background: var(--surface);
-}
-
-.cart-form-grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
-    gap: .75rem;
-}
-
-.cart-form-grid label,
-.cart-form-row label {
-    display: flex;
-    flex-direction: column;
-    gap: .35rem;
-}
-
-.cart-form-actions {
-    display: flex;
-    flex-wrap: wrap;
-    gap: .5rem;
-    justify-content: flex-end;
 }
 
 .meta-label {
@@ -628,30 +634,8 @@ button.status-action:disabled:hover {
     color: var(--muted);
 }
 
-#system-update-status.success {
-    color: #15803d;
-}
-
-#system-update-status.error {
-    color: #b91c1c;
-}
-
-#system-update-log {
-    margin-top: .75rem;
-    padding: .75rem 1rem;
-    border: 1px solid var(--border);
-    border-radius: .75rem;
-    background: var(--surface-alt);
-    white-space: pre-wrap;
-    overflow: auto;
-    max-height: 18rem;
-    font-family: "SFMono-Regular", "Menlo", "Monaco", "Consolas", "Liberation Mono", "Courier New", monospace;
-    line-height: 1.4;
-}
-
 .checkbox-inline {
     display: flex;
-    flex-direction: row;
     align-items: center;
     gap: .5rem;
     font-weight: 600;
@@ -697,6 +681,70 @@ button.status-action:disabled:hover {
     font-style: normal;
     color: var(--muted);
     font-size: .85rem;
+}
+
+.room-request-controls {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 1rem;
+    align-items: flex-end;
+    margin-bottom: 0.75rem;
+}
+
+.room-request-controls label {
+    flex: 1 1 220px;
+}
+
+.room-request-controls button {
+    margin-top: 0.5rem;
+}
+
+.room-request-list {
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+}
+
+.room-request-row {
+    display: flex;
+    justify-content: space-between;
+    gap: 1rem;
+    padding: 0.75rem 1rem;
+    border: 1px solid rgba(15, 23, 42, 0.12);
+    border-radius: 8px;
+    background: rgba(15, 23, 42, 0.03);
+}
+
+.room-request-info {
+    flex: 1 1 auto;
+}
+
+.room-request-info strong {
+    display: block;
+    margin-bottom: 0.25rem;
+}
+
+.room-request-meta {
+    font-size: 0.85rem;
+    color: var(--muted);
+}
+
+.room-request-actions {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 0.5rem;
+}
+
+.room-request-actions .inline-label {
+    display: flex;
+    flex-direction: column;
+    font-weight: 600;
+    gap: 0.25rem;
+}
+
+.room-request-actions input[type="number"] {
+    width: 90px;
 }
 
 .article-option input[type="checkbox"] {
