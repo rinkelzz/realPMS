@@ -1,0 +1,646 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>realPMS Verwaltung</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<div id="notification" class="notification" role="status" aria-live="polite"></div>
+<header class="top-bar">
+    <div>
+        <h1>realPMS Prototyp</h1>
+        <p class="subtitle">Hotel-PMS Verwaltungsoberfläche</p>
+    </div>
+    <form id="token-form" class="token-form" autocomplete="off">
+        <label for="api-token">API-Token</label>
+        <input id="api-token" name="api-token" type="password" placeholder="Token eingeben" required>
+        <button type="submit">Speichern</button>
+        <button type="button" id="clear-token" class="secondary">Löschen</button>
+    </form>
+</header>
+<nav class="main-nav">
+    <button type="button" data-section="dashboard" class="active">Dashboard</button>
+    <button type="button" data-section="reservations">Reservierungen</button>
+    <button type="button" data-section="rooms">Zimmer</button>
+    <button type="button" data-section="housekeeping">Housekeeping</button>
+    <button type="button" data-section="billing">Fakturierung</button>
+    <button type="button" data-section="reports">Berichte</button>
+    <button type="button" data-section="users">Benutzer</button>
+    <button type="button" data-section="companies">Firmen</button>
+    <button type="button" data-section="guests">Gäste</button>
+    <button type="button" data-section="integrations">Integrationen</button>
+    <button type="button" data-section="settings">Einstellungen</button>
+    <button type="button" data-section="guest-portal">Gästeportal</button>
+</nav>
+<main>
+    <section id="dashboard" data-section class="active">
+        <div class="card-grid">
+            <article class="card">
+                <h2>Heutige Belegung</h2>
+                <p id="dash-occupancy-rate" class="figure">-- %</p>
+                <p id="dash-occupancy-detail" class="muted"></p>
+            </article>
+            <article class="card">
+                <h2>Monatsumsatz</h2>
+                <p id="dash-revenue-total" class="figure">-- EUR</p>
+                <p id="dash-revenue-detail" class="muted"></p>
+            </article>
+            <article class="card">
+                <h2>Offene Aufgaben</h2>
+                <p id="dash-open-tasks" class="figure">--</p>
+                <p class="muted">Housekeeping &amp; Maintenance</p>
+            </article>
+        </div>
+        <div class="panel">
+            <div class="panel-header">
+                <h3>Belegungsübersicht</h3>
+                <div class="panel-actions">
+                    <label for="dashboard-date">Datum</label>
+                    <input type="date" id="dashboard-date">
+                    <button type="button" id="refresh-dashboard" class="secondary">Aktualisieren</button>
+                    <label for="calendar-label-mode">Anzeige</label>
+                    <select id="calendar-label-mode">
+                        <option value="guest">Gastname</option>
+                        <option value="company">Firmenname</option>
+                    </select>
+                    <button type="button" id="open-calendar-settings" class="secondary">Farben anpassen</button>
+                </div>
+            </div>
+            <div class="calendar-wrapper">
+                <div id="occupancy-calendar"></div>
+            </div>
+            <div id="occupancy-table" class="table-wrapper"></div>
+        </div>
+    </section>
+
+    <section id="reservations" data-section>
+        <div class="section-header">
+            <h2>Reservierungen</h2>
+            <button type="button" id="reload-reservations" class="secondary">Neu laden</button>
+        </div>
+        <p class="table-hint">Nutzen Sie die farbigen Schnellaktionen, um Gäste mit einem Klick einzuchecken, als bezahlt zu markieren, auszuchecken oder als No-Show zu vermerken.</p>
+        <div id="reservations-list" class="table-wrapper"></div>
+        <details class="form-panel">
+            <summary>Neue Reservierung anlegen</summary>
+            <form id="reservation-form" class="grid-form">
+                <div id="reservation-meta" class="reservation-meta hidden">
+                    <div class="reservation-meta-block">
+                        <span class="meta-label">Reservierungsnummer</span>
+                        <span id="reservation-number" class="meta-value">--</span>
+                    </div>
+                    <div class="reservation-meta-block">
+                        <span class="meta-label">Rechnung</span>
+                        <div class="meta-actions">
+                            <a id="reservation-invoice-link" class="meta-link hidden" href="#" target="_blank" rel="noopener">PDF öffnen</a>
+                            <button type="button" id="reservation-create-invoice">Rechnung erstellen</button>
+                            <button type="button" id="reservation-pay-invoice" class="secondary">Als bezahlt verbuchen</button>
+                        </div>
+                        <p id="reservation-invoice-status" class="muted small-text"></p>
+                    </div>
+                </div>
+                <fieldset>
+                    <legend>Aufenthalt</legend>
+                    <label>Check-in
+                        <input type="date" name="check_in" required>
+                    </label>
+                    <label>Check-out
+                        <input type="date" name="check_out" required>
+                    </label>
+                    <label>Erwachsene
+                        <input type="number" name="adults" min="1" value="1">
+                    </label>
+                    <label>Kinder
+                        <input type="number" name="children" min="0" value="0">
+                    </label>
+                    <label>Rate-Plan
+                        <select name="rate_plan"></select>
+                    </label>
+                    <label>Zimmer
+                        <select name="rooms" multiple size="4"></select>
+                    </label>
+                    <p id="reservation-capacity" class="muted"></p>
+                </fieldset>
+                <fieldset>
+                    <legend>Gast</legend>
+                    <div class="guest-search-row">
+                        <label>Gast suchen
+                            <input type="text" name="guest_search" placeholder="Name, E-Mail oder Firma" autocomplete="off">
+                            <div id="guest-search-results" class="guest-suggestions hidden"></div>
+                        </label>
+                        <button type="button" id="guest-clear-selection" class="secondary small hidden">Auswahl löschen</button>
+                    </div>
+                    <input type="hidden" name="guest_id">
+                    <p class="muted small-text">Mindestens 2 Zeichen eingeben, um bestehende Gäste zu finden. Leerlassen für einen neuen Gast.</p>
+                    <label>Vorname
+                        <input type="text" name="guest_first" required>
+                    </label>
+                    <label>Nachname
+                        <input type="text" name="guest_last" required>
+                    </label>
+                    <label>E-Mail
+                        <input type="email" name="guest_email">
+                    </label>
+                    <label>Telefon
+                        <input type="tel" name="guest_phone">
+                    </label>
+                    <label>Firma
+                        <select name="guest_company">
+                            <option value="">Keine Firma</option>
+                        </select>
+                    </label>
+                </fieldset>
+                <fieldset>
+                    <legend>Abrechnung</legend>
+                    <label>Gesamtbetrag
+                        <input type="number" name="total_amount" min="0" step="0.01">
+                    </label>
+                    <label>Währung
+                        <input type="text" name="currency" value="EUR" maxlength="3">
+                    </label>
+                    <label>Status
+                        <select name="status">
+                            <option value="confirmed">Bestätigt</option>
+                            <option value="tentative">Voranfrage</option>
+                            <option value="checked_in">Eingecheckt</option>
+                            <option value="paid">Bezahlt</option>
+                            <option value="checked_out">Ausgecheckt</option>
+                            <option value="cancelled">Storniert</option>
+                            <option value="no_show">Nicht erschienen</option>
+                        </select>
+                    </label>
+                    <label>Quelle
+                        <input type="text" name="booked_via" placeholder="z.B. Website, Booking.com">
+                    </label>
+                    <div>
+                        <label class="inline-label">Zusatzleistungen</label>
+                        <p class="muted small-text">Wählen Sie optionale Artikel, die automatisch in die Rechnung übernommen werden.</p>
+                        <div id="reservation-article-options" class="article-grid"></div>
+                    </div>
+                </fieldset>
+                <div class="form-actions">
+                    <button type="submit">Reservierung speichern</button>
+                    <button type="button" id="reservation-cancel-edit" class="secondary hidden">Abbrechen</button>
+                </div>
+            </form>
+        </details>
+    </section>
+
+    <section id="rooms" data-section>
+        <div class="section-layout">
+            <div class="panel">
+                <div class="panel-header">
+                    <h2>Zimmer</h2>
+                    <button type="button" id="reload-rooms" class="secondary">Neu laden</button>
+                </div>
+                <div id="rooms-list" class="table-wrapper"></div>
+            </div>
+            <div class="panel">
+                <h3>Neues Zimmer</h3>
+                <form id="room-form" class="stacked-form">
+                    <label>Zimmernummer
+                        <input type="text" name="room_number" required>
+                    </label>
+                    <label>Etage
+                        <input type="text" name="floor">
+                    </label>
+                    <label>Zimmerkategorie
+                        <select name="room_type" required></select>
+                    </label>
+                    <label>Status
+                        <select name="status">
+                            <option value="available">Verfügbar</option>
+                            <option value="occupied">Belegt</option>
+                            <option value="dirty">Reinigung erforderlich</option>
+                            <option value="out_of_order">Außer Betrieb</option>
+                        </select>
+                    </label>
+                    <label>Notizen
+                        <textarea name="notes" rows="3"></textarea>
+                    </label>
+                    <button type="submit">Zimmer speichern</button>
+                </form>
+            </div>
+            <div class="panel">
+                <h3>Zimmerkategorie</h3>
+                <form id="room-type-form" class="stacked-form">
+                    <label>Name
+                        <input type="text" name="name" required>
+                    </label>
+                    <label>Grundpreis
+                        <input type="number" name="base_price" min="0" step="0.01">
+                    </label>
+                    <label>Beschreibung
+                        <textarea name="description" rows="3"></textarea>
+                    </label>
+                    <button type="submit">Kategorie anlegen</button>
+                </form>
+                <div id="room-types-list" class="table-wrapper small"></div>
+            </div>
+            <div class="panel">
+                <h3>Rate-Pläne</h3>
+                <form id="rate-plan-form" class="stacked-form">
+                    <label>Name
+                        <input type="text" name="name" required>
+                    </label>
+                    <label>Grundpreis
+                        <input type="number" name="base_price" min="0" step="0.01">
+                    </label>
+                    <label>Währung
+                        <input type="text" name="currency" value="EUR" maxlength="3">
+                    </label>
+                    <label>Stornobedingungen
+                        <textarea name="cancellation_policy" rows="2"></textarea>
+                    </label>
+                    <button type="submit">Rate-Plan erstellen</button>
+                </form>
+                <div id="rate-plans-list" class="table-wrapper small"></div>
+            </div>
+        </div>
+    </section>
+
+    <section id="housekeeping" data-section>
+        <div class="section-header">
+            <h2>Housekeeping &amp; Maintenance</h2>
+            <button type="button" id="reload-tasks" class="secondary">Neu laden</button>
+        </div>
+        <div id="tasks-list" class="table-wrapper"></div>
+        <details class="form-panel">
+            <summary>Neue Aufgabe</summary>
+            <form id="task-form" class="grid-form">
+                <label>Zimmer
+                    <select name="room"></select>
+                </label>
+                <label>Titel
+                    <input type="text" name="title" required>
+                </label>
+                <label>Status
+                    <select name="status">
+                        <option value="open">Offen</option>
+                        <option value="in_progress">In Bearbeitung</option>
+                        <option value="done">Erledigt</option>
+                    </select>
+                </label>
+                <label>Fällig am
+                    <input type="datetime-local" name="due_date">
+                </label>
+                <label>Beschreibung
+                    <textarea name="description" rows="3"></textarea>
+                </label>
+                <button type="submit">Aufgabe speichern</button>
+            </form>
+        </details>
+    </section>
+
+    <section id="billing" data-section>
+        <div class="section-layout">
+            <div class="panel">
+                <div class="panel-header">
+                    <h2>Rechnungen</h2>
+                    <button type="button" id="reload-invoices" class="secondary">Neu laden</button>
+                </div>
+                <div id="invoices-list" class="table-wrapper"></div>
+            </div>
+            <div class="panel">
+                <h3>Neue Rechnung</h3>
+                <form id="invoice-form" class="stacked-form">
+                    <label>Reservierung
+                        <input type="number" name="reservation_id" min="1" required>
+                    </label>
+                    <label>Ausstellungsdatum
+                        <input type="date" name="issue_date">
+                    </label>
+                    <label>Fälligkeitsdatum
+                        <input type="date" name="due_date">
+                    </label>
+                    <div id="invoice-items" class="invoice-items"></div>
+                    <button type="button" id="add-invoice-item" class="secondary">Position hinzufügen</button>
+                    <button type="submit">Rechnung erstellen</button>
+                </form>
+            </div>
+            <div class="panel">
+                <div class="panel-header">
+                    <h3>Artikel &amp; Zusatzleistungen</h3>
+                    <button type="button" id="reload-articles" class="secondary">Neu laden</button>
+                </div>
+                <div id="articles-list" class="table-wrapper"></div>
+                <form id="article-form" class="grid-form">
+                    <h4>Neuer Artikel</h4>
+                    <label>Name
+                        <input type="text" name="name" required>
+                    </label>
+                    <label>Beschreibung
+                        <textarea name="description" rows="2"></textarea>
+                    </label>
+                    <label>Abrechnungsart
+                        <select name="charge_scheme">
+                            <option value="per_person_per_day">pro Person &amp; Tag</option>
+                            <option value="per_room_per_day">pro Zimmer &amp; Tag</option>
+                            <option value="per_stay">pro Aufenthalt</option>
+                            <option value="per_person">pro Person</option>
+                            <option value="per_day">pro Tag</option>
+                        </select>
+                    </label>
+                    <label>Einzelpreis (netto)
+                        <input type="number" name="unit_price" min="0" step="0.01" value="0.00">
+                    </label>
+                    <label>Mehrwertsteuer %
+                        <input type="number" name="tax_rate" min="0" step="0.1" value="19.0">
+                    </label>
+                    <label class="checkbox-inline">
+                        <input type="checkbox" name="is_active" checked>
+                        Aktiv
+                    </label>
+                    <div class="form-actions">
+                        <button type="submit">Artikel speichern</button>
+                        <button type="button" id="article-cancel-edit" class="secondary hidden">Abbrechen</button>
+                    </div>
+                </form>
+            </div>
+            <div class="panel">
+                <div class="panel-header">
+                    <h2>Zahlungen</h2>
+                    <button type="button" id="reload-payments" class="secondary">Neu laden</button>
+                </div>
+                <div id="payments-list" class="table-wrapper"></div>
+                <form id="payment-form" class="stacked-form">
+                    <h3>Neue Zahlung</h3>
+                    <label>Rechnung
+                        <input type="number" name="invoice_id" min="1" required>
+                    </label>
+                    <label>Methode
+                        <input type="text" name="method" placeholder="z.B. Bar, EC" required>
+                    </label>
+                    <label>Betrag
+                        <input type="number" name="amount" min="0" step="0.01" required>
+                    </label>
+                    <label>Währung
+                        <input type="text" name="currency" value="EUR" maxlength="3">
+                    </label>
+                    <label>Bezahlt am
+                        <input type="datetime-local" name="paid_at">
+                    </label>
+                    <label>Referenz
+                        <input type="text" name="reference">
+                    </label>
+                    <label>Notizen
+                        <textarea name="notes" rows="2"></textarea>
+                    </label>
+                    <button type="submit">Zahlung erfassen</button>
+                </form>
+            </div>
+        </div>
+    </section>
+
+    <section id="reports" data-section>
+        <div class="panel">
+            <div class="panel-header">
+                <h2>Berichte</h2>
+                <div class="panel-actions">
+                    <label>Von
+                        <input type="date" id="report-start">
+                    </label>
+                    <label>Bis
+                        <input type="date" id="report-end">
+                    </label>
+                    <button type="button" id="refresh-reports" class="secondary">Aktualisieren</button>
+                </div>
+            </div>
+            <div class="report-grid">
+                <div>
+                    <h3>Belegung</h3>
+                    <div id="report-occupancy" class="table-wrapper"></div>
+                </div>
+                <div>
+                    <h3>Umsatz</h3>
+                    <div id="report-revenue" class="table-wrapper"></div>
+                </div>
+                <div>
+                    <h3>Forecast</h3>
+                    <div id="report-forecast" class="table-wrapper"></div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <section id="users" data-section>
+        <div class="section-layout">
+            <div class="panel">
+                <div class="panel-header">
+                    <h2>Benutzer</h2>
+                    <button type="button" id="reload-users" class="secondary">Neu laden</button>
+                </div>
+                <div id="users-list" class="table-wrapper"></div>
+            </div>
+            <div class="panel">
+                <h3>Benutzer anlegen</h3>
+                <form id="user-form" class="stacked-form">
+                    <label>Name
+                        <input type="text" name="name" required>
+                    </label>
+                    <label>E-Mail
+                        <input type="email" name="email" required>
+                    </label>
+                    <label>Passwort
+                        <input type="password" name="password" required>
+                    </label>
+                    <fieldset>
+                        <legend>Rollen</legend>
+                        <div id="user-roles" class="checkbox-grid"></div>
+                    </fieldset>
+                    <button type="submit">Benutzer speichern</button>
+                </form>
+            </div>
+            <div class="panel">
+                <h3>Rollenverwaltung</h3>
+                <form id="role-form" class="stacked-form">
+                    <label>Name
+                        <input type="text" name="name" required>
+                    </label>
+                    <label>Beschreibung
+                        <textarea name="description" rows="2"></textarea>
+                    </label>
+                    <button type="submit">Rolle erstellen</button>
+                </form>
+                <div id="roles-list" class="table-wrapper small"></div>
+            </div>
+        </div>
+    </section>
+
+    <section id="companies" data-section>
+        <div class="section-header">
+            <h2>Firmen</h2>
+            <button type="button" id="reload-companies" class="secondary">Neu laden</button>
+        </div>
+        <div id="companies-list" class="table-wrapper"></div>
+        <details class="form-panel">
+            <summary>Firma anlegen</summary>
+            <form id="company-form" class="grid-form">
+                <label>Firmenname
+                    <input type="text" name="name" required>
+                </label>
+                <label>E-Mail
+                    <input type="email" name="email">
+                </label>
+                <label>Telefon
+                    <input type="tel" name="phone">
+                </label>
+                <label>Adresse
+                    <input type="text" name="address">
+                </label>
+                <label>Stadt
+                    <input type="text" name="city">
+                </label>
+                <label>Land
+                    <input type="text" name="country">
+                </label>
+                <label>Notizen
+                    <textarea name="notes" rows="3"></textarea>
+                </label>
+                <div class="form-actions">
+                    <button type="submit">Firma speichern</button>
+                    <button type="button" id="company-cancel-edit" class="secondary hidden">Abbrechen</button>
+                </div>
+            </form>
+        </details>
+    </section>
+
+    <section id="guests" data-section>
+        <div class="section-header">
+            <h2>Gäste</h2>
+            <button type="button" id="reload-guests" class="secondary">Neu laden</button>
+        </div>
+        <div id="guests-list" class="table-wrapper"></div>
+        <details class="form-panel">
+            <summary>Gast anlegen</summary>
+            <form id="guest-form" class="grid-form">
+                <label>Vorname
+                    <input type="text" name="first_name" required>
+                </label>
+                <label>Nachname
+                    <input type="text" name="last_name" required>
+                </label>
+                <label>E-Mail
+                    <input type="email" name="email">
+                </label>
+                <label>Telefon
+                    <input type="tel" name="phone">
+                </label>
+                <label>Adresse
+                    <input type="text" name="address">
+                </label>
+                <label>Stadt
+                    <input type="text" name="city">
+                </label>
+                <label>Land
+                    <input type="text" name="country">
+                </label>
+                <label>Firma
+                    <select name="company_id">
+                        <option value="">Keine Firma</option>
+                    </select>
+                </label>
+                <label>Notizen
+                    <textarea name="notes" rows="3"></textarea>
+                </label>
+                <div class="form-actions">
+                    <button type="submit">Gast speichern</button>
+                    <button type="button" id="guest-cancel-edit" class="secondary hidden">Abbrechen</button>
+                </div>
+            </form>
+        </details>
+    </section>
+
+    <section id="integrations" data-section>
+        <div class="panel">
+            <div class="panel-header">
+                <h2>Integrationsstatus</h2>
+                <button type="button" id="reload-integrations" class="secondary">Neu laden</button>
+            </div>
+            <div id="integrations-list" class="integration-grid"></div>
+        </div>
+    </section>
+
+    <section id="settings" data-section>
+        <div class="section-header">
+            <h2>Einstellungen</h2>
+            <button type="button" id="reload-settings" class="secondary">Neu laden</button>
+        </div>
+        <div class="panel">
+            <h3>Kalenderfarben</h3>
+            <p class="muted">Wählen Sie die Farben für die Reservierungsstatus im Dashboard-Kalender und in den Schnellaktionen.</p>
+            <form id="calendar-color-form" class="stacked-form">
+                <div class="color-grid">
+                    <label>
+                        <span>Voranfrage</span>
+                        <input type="color" data-status="tentative" value="#f97316">
+                    </label>
+                    <label>
+                        <span>Bestätigt</span>
+                        <input type="color" data-status="confirmed" value="#2563eb">
+                    </label>
+                    <label>
+                        <span>Angereist</span>
+                        <input type="color" data-status="checked_in" value="#16a34a">
+                    </label>
+                    <label>
+                        <span>Bezahlt</span>
+                        <input type="color" data-status="paid" value="#0ea5e9">
+                    </label>
+                    <label>
+                        <span>Abgereist</span>
+                        <input type="color" data-status="checked_out" value="#6b7280">
+                    </label>
+                    <label>
+                        <span>Storniert</span>
+                        <input type="color" data-status="cancelled" value="#ef4444">
+                    </label>
+                    <label>
+                        <span>No-Show</span>
+                        <input type="color" data-status="no_show" value="#7c3aed">
+                    </label>
+                </div>
+                <div class="form-actions">
+                    <button type="submit">Speichern</button>
+                    <button type="button" id="reset-calendar-colors" class="secondary">Zurücksetzen</button>
+                </div>
+            </form>
+        </div>
+        <div class="panel">
+            <h3>Rechnungslogo</h3>
+            <p class="muted">Laden Sie ein PNG- oder JPEG-Logo hoch. Es erscheint automatisch auf PDF-Rechnungen.</p>
+            <form id="invoice-logo-form" class="stacked-form" enctype="multipart/form-data">
+                <label>Logo auswählen
+                    <input type="file" accept="image/png,image/jpeg">
+                </label>
+                <div id="invoice-logo-preview" class="logo-preview">
+                    <p class="muted">Noch kein Logo hochgeladen.</p>
+                </div>
+                <div class="form-actions">
+                    <button type="submit">Logo speichern</button>
+                    <button type="button" id="remove-invoice-logo" class="secondary hidden">Logo entfernen</button>
+                </div>
+            </form>
+        </div>
+    </section>
+
+    <section id="guest-portal" data-section>
+        <div class="panel">
+            <h2>Gästeportal Vorschau</h2>
+            <form id="guest-lookup" class="inline-form">
+                <label>Bestätigungsnummer
+                    <input type="text" name="confirmation" required>
+                </label>
+                <button type="submit">Reservierung anzeigen</button>
+            </form>
+            <div id="guest-portal-result" class="table-wrapper"></div>
+        </div>
+    </section>
+</main>
+<footer class="app-footer">
+    <p>realPMS Prototype &mdash; Demonstrationsoberfläche</p>
+</footer>
+<script src="app.js" type="module"></script>
+</body>
+</html>
