@@ -445,6 +445,18 @@ function getSchemaStatements(): array
                 CONSTRAINT fk_reservation_rooms_room FOREIGN KEY (room_id) REFERENCES rooms(id)
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
         SQL,
+        'reservation_room_requests' => <<<'SQL'
+            CREATE TABLE IF NOT EXISTS reservation_room_requests (
+                id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+                reservation_id BIGINT UNSIGNED NOT NULL,
+                room_type_id BIGINT UNSIGNED NOT NULL,
+                quantity SMALLINT UNSIGNED NOT NULL DEFAULT 1,
+                created_at TIMESTAMP NULL,
+                updated_at TIMESTAMP NULL,
+                CONSTRAINT fk_reservation_room_requests_reservation FOREIGN KEY (reservation_id) REFERENCES reservations(id) ON DELETE CASCADE,
+                CONSTRAINT fk_reservation_room_requests_type FOREIGN KEY (room_type_id) REFERENCES room_types(id)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+        SQL,
         'reservation_articles' => <<<'SQL'
             CREATE TABLE IF NOT EXISTS reservation_articles (
                 id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,

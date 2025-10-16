@@ -641,6 +641,7 @@ function handleReservations(string $method, array $segments): void
                 jsonResponse(['error' => 'Reservation not found.'], 404);
             }
             $reservation['rooms'] = fetchReservationRooms((int) $id);
+            $reservation['room_requests'] = fetchReservationRoomRequests((int) $id, $pdo);
             $reservation['documents'] = fetchReservationDocuments((int) $id);
             $reservation['status_history'] = fetchReservationStatusLogs((int) $id);
             $reservation['articles'] = fetchReservationArticles((int) $id);
@@ -673,6 +674,7 @@ function handleReservations(string $method, array $segments): void
         $reservations = $stmt->fetchAll();
         foreach ($reservations as &$reservation) {
             $reservation['rooms'] = fetchReservationRooms((int) $reservation['id']);
+            $reservation['room_requests'] = fetchReservationRoomRequests((int) $reservation['id'], $pdo);
         }
         jsonResponse($reservations);
     }
@@ -682,6 +684,13 @@ function handleReservations(string $method, array $segments): void
         validateReservationPayload($data);
 
         $guestCount = calculateGuestCount($data['adults'] ?? 1, $data['children'] ?? 0);
+        $roomRequests = normalizeReservationRoomRequests($pdo, $data['room_requests'] ?? []);
+        if (empty($roomRequests) && (empty($data['rooms']) || !is_array($data['rooms']) || count($data['rooms']) === 0)) {
+            jsonResponse(['error' => 'Bitte mindestens eine Zimmerkategorie oder ein Zimmer zuweisen.'], 422);
+        }
+        if (!empty($roomRequests)) {
+            ensureRoomRequestCapacity($roomRequests, $guestCount);
+        }
 
         $pdo->beginTransaction();
         try {
@@ -719,16 +728,21 @@ function handleReservations(string $method, array $segments): void
             ]);
 
             $reservationId = (int) $pdo->lastInsertId();
-            $roomIds = extractRoomIdsFromSelection($data['rooms']);
-            assignRoomsToReservation(
-                $pdo,
-                $reservationId,
-                $data['rooms'] ?? [],
-                $data['check_in_date'],
-                $data['check_out_date'],
-                $guestCount
-            );
+            $roomIds = extractRoomIdsFromSelection($data['rooms'] ?? []);
+            if (!empty($roomIds)) {
+                assignRoomsToReservation(
+                    $pdo,
+                    $reservationId,
+                    $data['rooms'] ?? [],
+                    $data['check_in_date'],
+                    $data['check_out_date'],
+                    $guestCount
+                );
+            }
             $roomCount = count($roomIds);
+            if ($roomCount === 0) {
+                $roomCount = calculateRoomRequestQuantity($roomRequests);
+            }
             $articleSelections = isset($data['articles']) && is_array($data['articles']) ? $data['articles'] : [];
             syncReservationArticles(
                 $pdo,
@@ -739,6 +753,7 @@ function handleReservations(string $method, array $segments): void
                 $guestCount,
                 $roomCount
             );
+            syncReservationRoomRequests($pdo, $reservationId, $roomRequests);
             logReservationStatus($pdo, $reservationId, $statusValue, $data['status_notes'] ?? null, $data['recorded_by'] ?? null);
             updateRoomsForReservationStatus($pdo, $reservationId, $statusValue, $data['status_notes'] ?? null, $data['recorded_by'] ?? null);
 
@@ -781,14 +796,31 @@ function handleReservations(string $method, array $segments): void
         $roomSelection = !empty($data['rooms']) ? $data['rooms'] : fetchReservationRooms((int) $id);
         $roomIds = extractRoomIdsFromSelection($roomSelection);
         $roomCount = count($roomIds);
-        ensureRoomCapacity($pdo, $roomIds, $guestCount);
+        $existingRequests = fetchReservationRoomRequests((int) $id, $pdo);
+        $roomRequestsChanged = array_key_exists('room_requests', $data);
+        $roomRequests = $roomRequestsChanged
+            ? normalizeReservationRoomRequests($pdo, is_array($data['room_requests']) ? $data['room_requests'] : [])
+            : $existingRequests;
 
-        if (empty($data['rooms']) && (array_key_exists('check_in_date', $data) || array_key_exists('check_out_date', $data))) {
+        if ($roomCount > 0) {
+            ensureRoomCapacity($pdo, $roomIds, $guestCount);
+        } elseif (!empty($roomRequests)) {
+            ensureRoomRequestCapacity($roomRequests, $guestCount);
+        } else {
+            jsonResponse(['error' => 'Bitte mindestens eine Zimmerkategorie oder ein Zimmer zuweisen.'], 422);
+        }
+
+        if ($roomCount > 0 && empty($data['rooms']) && (array_key_exists('check_in_date', $data) || array_key_exists('check_out_date', $data))) {
             foreach ($roomIds as $roomId) {
                 if (!isRoomAvailable($pdo, $roomId, $targetCheckIn, $targetCheckOut, (int) $id)) {
                     jsonResponse(['error' => sprintf('Room %d is not available for the updated stay dates.', $roomId)], 422);
                 }
             }
+        }
+
+        $roomRequestCount = calculateRoomRequestQuantity($roomRequests);
+        if ($roomCount === 0) {
+            $roomCount = $roomRequestCount;
         }
 
         $roomsChanged = !empty($data['rooms']);
@@ -819,7 +851,7 @@ function handleReservations(string $method, array $segments): void
             }
         }
 
-        if (!$updates && empty($data['rooms']) && empty($data['guest'])) {
+        if (!$updates && empty($data['rooms']) && empty($data['guest']) && !$roomRequestsChanged) {
             jsonResponse(['error' => 'No changes supplied.'], 422);
         }
 
@@ -872,6 +904,10 @@ function handleReservations(string $method, array $segments): void
                 );
             }
 
+            if ($roomRequestsChanged) {
+                syncReservationRoomRequests($pdo, (int) $id, $roomRequests);
+            }
+
             if (array_key_exists('articles', $data)) {
                 $articleSelections = is_array($data['articles']) ? $data['articles'] : [];
                 syncReservationArticles(
@@ -883,7 +919,7 @@ function handleReservations(string $method, array $segments): void
                     $guestCount,
                     $roomCount
                 );
-            } elseif ($roomsChanged || $datesChanged || $guestChanged) {
+            } elseif ($roomsChanged || $datesChanged || $guestChanged || $roomRequestsChanged) {
                 recalculateReservationArticles(
                     $pdo,
                     (int) $id,
@@ -1018,8 +1054,12 @@ function validateReservationPayload(array $data): void
         }
     }
 
-    if (empty($data['rooms']) || !is_array($data['rooms'])) {
-        jsonResponse(['error' => 'rooms must be a non-empty array of room assignments.'], 422);
+    if (isset($data['rooms']) && !is_array($data['rooms'])) {
+        jsonResponse(['error' => 'rooms must be provided as an array when supplied.'], 422);
+    }
+
+    if (isset($data['room_requests']) && !is_array($data['room_requests'])) {
+        jsonResponse(['error' => 'room_requests must be provided as an array when supplied.'], 422);
     }
 
     $guestCount = calculateGuestCount($data['adults'] ?? 1, $data['children'] ?? 0);
@@ -1221,6 +1261,179 @@ function ensureRoomCapacity(PDO $pdo, array $roomIds, int $guestCount): void
             $guestCount
         ));
     }
+}
+
+function normalizeReservationRoomRequests(PDO $pdo, array $requests): array
+{
+    if (empty($requests)) {
+        return [];
+    }
+
+    $normalized = [];
+    $typeIds = [];
+    foreach ($requests as $request) {
+        if (!is_array($request)) {
+            jsonResponse(['error' => 'room_requests entries must be objects with room_type_id and quantity.'], 422);
+        }
+        $roomTypeId = isset($request['room_type_id']) ? (int) $request['room_type_id'] : 0;
+        if ($roomTypeId <= 0) {
+            jsonResponse(['error' => 'room_type_id is required for each room request.'], 422);
+        }
+        $quantity = isset($request['quantity']) ? (int) $request['quantity'] : 1;
+        if ($quantity <= 0) {
+            jsonResponse(['error' => 'quantity must be at least 1 for each room request.'], 422);
+        }
+        $normalized[] = [
+            'room_type_id' => $roomTypeId,
+            'quantity' => $quantity,
+        ];
+        $typeIds[$roomTypeId] = true;
+    }
+
+    $placeholders = implode(', ', array_fill(0, count($typeIds), '?'));
+    $stmt = $pdo->prepare("SELECT id, name, base_occupancy, max_occupancy FROM room_types WHERE id IN ($placeholders)");
+    $stmt->execute(array_keys($typeIds));
+    $roomTypes = [];
+    while ($row = $stmt->fetch()) {
+        $roomTypes[(int) $row['id']] = $row;
+    }
+
+    if (count($roomTypes) !== count($typeIds)) {
+        jsonResponse(['error' => 'Eine angegebene Zimmerkategorie wurde nicht gefunden.'], 422);
+    }
+
+    $aggregated = [];
+    foreach ($normalized as $entry) {
+        $type = $roomTypes[$entry['room_type_id']];
+        $capacity = (int) ($type['max_occupancy'] ?? 0);
+        if ($capacity <= 0) {
+            $capacity = (int) ($type['base_occupancy'] ?? 0);
+        }
+        if ($capacity <= 0) {
+            jsonResponse(['error' => sprintf('Für die Kategorie %s ist keine Kapazität hinterlegt.', $type['name'] ?? ('#' . $entry['room_type_id']))], 422);
+        }
+
+        if (!isset($aggregated[$entry['room_type_id']])) {
+            $aggregated[$entry['room_type_id']] = [
+                'room_type_id' => $entry['room_type_id'],
+                'quantity' => $entry['quantity'],
+                'room_type_name' => $type['name'] ?? null,
+                'capacity_per_unit' => $capacity,
+            ];
+        } else {
+            $aggregated[$entry['room_type_id']]['quantity'] += $entry['quantity'];
+        }
+    }
+
+    return array_values($aggregated);
+}
+
+function calculateRoomRequestCapacity(array $requests): int
+{
+    $total = 0;
+    foreach ($requests as $request) {
+        $capacity = (int) ($request['capacity_per_unit'] ?? 0);
+        $quantity = max(0, (int) ($request['quantity'] ?? 0));
+        if ($capacity > 0 && $quantity > 0) {
+            $total += $capacity * $quantity;
+        }
+    }
+
+    return $total;
+}
+
+function calculateRoomRequestQuantity(array $requests): int
+{
+    $total = 0;
+    foreach ($requests as $request) {
+        $total += max(0, (int) ($request['quantity'] ?? 0));
+    }
+
+    return $total;
+}
+
+function ensureRoomRequestCapacity(array $requests, int $guestCount): void
+{
+    if ($guestCount < 1) {
+        jsonResponse(['error' => 'At least one guest is required for a reservation.'], 422);
+    }
+
+    $capacity = calculateRoomRequestCapacity($requests);
+    if ($capacity <= 0) {
+        jsonResponse(['error' => 'Für die ausgewählten Kategorien ist keine Kapazität hinterlegt.'], 422);
+    }
+
+    if ($guestCount > $capacity) {
+        $labels = array_map(
+            static function (array $request): string {
+                $name = $request['room_type_name'] ?? ('Kategorie #' . $request['room_type_id']);
+                $quantity = max(1, (int) ($request['quantity'] ?? 1));
+                return sprintf('%s × %d', $name, $quantity);
+            },
+            $requests
+        );
+
+        jsonResponse([
+            'error' => sprintf(
+                'Die ausgewählten Kategorien (%s) bieten insgesamt Platz für %d Gäste, angefragt wurden jedoch %d.',
+                implode(', ', $labels),
+                $capacity,
+                $guestCount
+            ),
+        ], 422);
+    }
+}
+
+function syncReservationRoomRequests(PDO $pdo, int $reservationId, array $requests): void
+{
+    $pdo->prepare('DELETE FROM reservation_room_requests WHERE reservation_id = :id')->execute(['id' => $reservationId]);
+
+    if (empty($requests)) {
+        return;
+    }
+
+    $stmt = $pdo->prepare('INSERT INTO reservation_room_requests (reservation_id, room_type_id, quantity, created_at, updated_at) VALUES (:reservation_id, :room_type_id, :quantity, :created_at, :updated_at)');
+    foreach ($requests as $request) {
+        $stmt->execute([
+            'reservation_id' => $reservationId,
+            'room_type_id' => $request['room_type_id'],
+            'quantity' => max(1, (int) $request['quantity']),
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+    }
+}
+
+function fetchReservationRoomRequests(int $reservationId, ?PDO $pdo = null): array
+{
+    $pdo = $pdo ?? db();
+    $sql = <<<SQL
+        SELECT rrr.id, rrr.room_type_id, rrr.quantity, rt.name AS room_type_name, rt.base_occupancy, rt.max_occupancy
+        FROM reservation_room_requests rrr
+        JOIN room_types rt ON rt.id = rrr.room_type_id
+        WHERE rrr.reservation_id = :reservation_id
+        ORDER BY rt.name
+    SQL;
+    $stmt = $pdo->prepare($sql);
+    $stmt->execute(['reservation_id' => $reservationId]);
+    $records = $stmt->fetchAll();
+
+    return array_map(
+        static function (array $record): array {
+            $capacity = (int) ($record['max_occupancy'] ?? 0);
+            if ($capacity <= 0) {
+                $capacity = (int) ($record['base_occupancy'] ?? 0);
+            }
+            return [
+                'id' => $record['id'],
+                'room_type_id' => (int) $record['room_type_id'],
+                'quantity' => (int) $record['quantity'],
+                'room_type_name' => $record['room_type_name'],
+                'capacity_per_unit' => $capacity > 0 ? $capacity : null,
+            ];
+        },
+        $records
+    );
 }
 
 function createGuest(PDO $pdo, array $guest): int
@@ -1940,6 +2153,7 @@ function fetchReservationBillingSnapshot(int $reservationId): array
     }
 
     $reservation['rooms'] = fetchReservationRooms($reservationId);
+    $reservation['room_requests'] = fetchReservationRoomRequests($reservationId, $pdo);
     $reservation['articles'] = fetchReservationArticles($reservationId);
 
     return $reservation;

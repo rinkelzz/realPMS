@@ -114,12 +114,20 @@
                     <label>Kinder
                         <input type="number" name="children" min="0" value="0">
                     </label>
-                    <label>Rate-Plan
-                        <select name="rate_plan"></select>
-                    </label>
-                    <label>Zimmer
-                        <select name="rooms" multiple size="4"></select>
-                    </label>
+                </fieldset>
+                <fieldset>
+                    <legend>Kategorien &amp; Überbuchung</legend>
+                    <p class="muted small-text">Wählen Sie vorerst nur eine Zimmerkategorie. Die konkrete Zimmerzuweisung erfolgt später.</p>
+                    <div class="room-request-controls">
+                        <label>Kategorie
+                            <select id="reservation-room-request-type"></select>
+                        </label>
+                        <label>Anzahl
+                            <input type="number" id="reservation-room-request-quantity" min="1" value="1">
+                        </label>
+                        <button type="button" id="reservation-room-request-add">Kategorie hinzufügen</button>
+                    </div>
+                    <div id="reservation-room-requests" class="room-request-list"></div>
                     <p id="reservation-capacity" class="muted"></p>
                 </fieldset>
                 <fieldset>

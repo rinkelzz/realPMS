@@ -59,10 +59,10 @@ Neben der reinen API steht jetzt ein leichtgewichtiger Administrations-Client zu
   ```
   und rufe anschließend `http://localhost:8080/` im Browser auf. Die API muss parallel (z. B. über Apache/Nginx oder einen zweiten PHP-Built-in-Server) erreichbar sein.
 - Im Bereich „Firmen“ legst du Unternehmensprofile an und bearbeitest sie; Gäste können direkt im Gästebereich einer Firma zugeordnet oder dort editiert werden.
-- Die Dashboard-Kalenderansicht sortiert Zimmer nach Kategorie, markiert Angereist/Bezahlt/Abgereist farblich und lässt sich per Umschalter zwischen Gast- und Firmenname umstellen; ein Klick auf eine belegte Zelle springt direkt zur entsprechenden Reservierung.
+- Die Dashboard-Kalenderansicht sortiert Zimmer nach Kategorie, markiert Angereist/Bezahlt/Abgereist farblich und lässt sich per Umschalter zwischen Gast- und Firmenname umstellen; überbuchte Kategorien erscheinen als eigene Zeile, bis eine konkrete Zimmernummer vergeben wurde. Ein Klick auf eine belegte Zelle springt direkt zur entsprechenden Reservierung.
 - Über den Button „Farben anpassen“ im Dashboard gelangst du direkt zu den Kalender-Einstellungen und kannst alle Status-Farben dauerhaft speichern oder zurücksetzen.
 - Die Reservierungsliste bietet farbige Schnellaktionen für Check-in, Zahlungseingang, Check-out und No-Show – ideal, um Gäste schnell als angereist, abgereist oder No-Show zu markieren.
-- Im Reservierungsformular kannst du aktive Artikel/Zusatzleistungen auswählen; Mengen werden automatisch mit der Zimmerkapazität abgeglichen.
+- Im Reservierungsformular wählst du zunächst Zimmerkategorien (Überbuchung), die Kapazität wird anhand der hinterlegten Kategorie-Belegung geprüft; Zusatzleistungen lassen sich wie gewohnt aktivieren und werden automatisch berücksichtigt.
 - Die Gastauswahl nutzt eine Live-Suche: Gib mindestens zwei Zeichen ein, um bestehende Gäste samt Firmenbezug zu finden – andernfalls legst du direkt einen neuen Gast über die Formularfelder an.
 - Öffnest du eine bestehende Reservierung, zeigt der Formularheader die neue fortlaufende Reservierungsnummer (`RES-000001`, `RES-000002`, …) sowie Schnellaktionen für „Rechnung erstellen“ und „Als bezahlt verbuchen“. Der PDF-Link steht nach der ersten Rechnung direkt bereit.
 - Der Fakturierungsbereich enthält ein Artikel-Panel samt CRUD-Funktionalität, eine Rechnungsmaske mit MwSt.-Berechnung sowie Direktlinks zum PDF-Export.
@@ -74,20 +74,20 @@ Nach dem erfolgreichen Datenbank-Setup stellt `backend/api/index.php` eine schla
 
 ### Front-Office & Reservierungen
 - `GET /backend/api/reservations?status=confirmed&from=2024-01-01&to=2024-01-31` – Übersicht über Reservierungen inklusive Zimmerzuweisungen.
-- `POST /backend/api/reservations` – Legt Gäste (falls nötig), Reservierung, Rate-Plan und Zimmerzuweisung in einem Schritt an. Beispiel-Payload:
+- `POST /backend/api/reservations` – Legt Gäste (falls nötig), Reservierung sowie Zimmerkategorie-Platzhalter in einem Schritt an. Konkrete Zimmerzuweisungen kannst du später per `rooms` ergänzen. Beispiel-Payload:
   ```json
   {
     "guest": {"first_name": "Max", "last_name": "Mustermann", "email": "max@example.com"},
     "check_in_date": "2024-02-10",
     "check_out_date": "2024-02-14",
-    "rooms": [{"room_id": 1, "nightly_rate": 120, "currency": "EUR"}],
-    "rate_plan_id": 2,
+    "room_requests": [{"room_type_id": 1, "quantity": 1}],
     "status": "confirmed",
     "total_amount": 480,
     "notes": "Late arrival",
     "articles": [{"article_id": 3, "multiplier": 4}]
   }
   ```
+  Optional kannst du weiterhin `rooms` mitsenden, um konkrete Zimmer zuzuweisen, sowie `rate_plan_id`, falls Preislogiken hinterlegt sind.
 - `POST /backend/api/reservations/{id}/status` – Aktualisiert den Reservierungsstatus (`checked_in`, `paid`, `checked_out`, `no_show` usw.) inklusive Logbuch, Zimmer- und Housekeeping-Updates. Aus Kompatibilitätsgründen funktionieren weiterhin die Kurzpfade `/check-in`, `/check-out`, `/pay` und `/no-show`.
 - `POST /backend/api/reservations/{id}/invoice` – Erstellt auf Basis der Zimmerzuweisungen und Zusatzartikel automatisch eine Rechnung mit fortlaufender Nummer (`INV-000001`, `INV-000002`, …).
 - `POST /backend/api/reservations/{id}/invoice-pay` – Verbucht den offenen Betrag der zuletzt erstellten Rechnung, erzeugt einen Zahlungseintrag und setzt die Reservierung auf `paid`.

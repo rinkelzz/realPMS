@@ -50,6 +50,7 @@ const state = {
     currentReservationInvoices: [],
     guestLookupResults: [],
     guestLookupTerm: '',
+    pendingRoomRequests: [],
 };
 
 const CALENDAR_DAYS = 14;
@@ -84,13 +85,16 @@ const reservationCreateInvoiceButton = document.getElementById('reservation-crea
 const reservationPayInvoiceButton = document.getElementById('reservation-pay-invoice');
 const reservationsList = document.getElementById('reservations-list');
 const reservationCapacityEl = document.getElementById('reservation-capacity');
-const reservationRoomsSelect = reservationForm ? reservationForm.querySelector('select[name="rooms"]') : null;
 const guestSearchInput = reservationForm ? reservationForm.querySelector('input[name="guest_search"]') : null;
 const guestIdInput = reservationForm ? reservationForm.querySelector('input[name="guest_id"]') : null;
 const guestSearchResults = document.getElementById('guest-search-results');
 const guestClearSelectionButton = document.getElementById('guest-clear-selection');
 const reservationGuestCompanySelect = reservationForm ? reservationForm.querySelector('select[name="guest_company"]') : null;
 const reservationArticleContainer = document.getElementById('reservation-article-options');
+const roomRequestList = document.getElementById('reservation-room-requests');
+const roomRequestTypeSelect = document.getElementById('reservation-room-request-type');
+const roomRequestQuantityInput = document.getElementById('reservation-room-request-quantity');
+const roomRequestAddButton = document.getElementById('reservation-room-request-add');
 const guestForm = document.getElementById('guest-form');
 const guestDetails = guestForm ? guestForm.closest('details') : null;
 const guestSummary = guestDetails ? guestDetails.querySelector('summary') : null;
@@ -358,11 +362,13 @@ if (occupancyCalendarContainer) {
         if (!(target instanceof Element)) {
             return;
         }
+        const entry = target.closest('.calendar-entry');
         const cell = target.closest('td.occupied');
         if (!cell) {
             return;
         }
-        const reservationId = Number(cell.dataset.reservationId);
+        const reservationIdAttr = entry?.dataset.reservationId || cell.dataset.reservationId;
+        const reservationId = Number(reservationIdAttr);
         if (!reservationId) {
             return;
         }
@@ -748,15 +754,172 @@ function renderTable(containerId, columns, rows, emptyState = 'Keine Daten vorha
     container.appendChild(table);
 }
 
-function calculateRoomCapacity(roomIds) {
-    if (!Array.isArray(roomIds) || roomIds.length === 0) {
-        return 0;
+function getRoomTypeById(roomTypeId) {
+    return state.roomTypes.find((type) => Number(type.id) === Number(roomTypeId)) || null;
+}
+
+function normalizeClientRoomRequests(requests = []) {
+    const aggregated = new Map();
+    requests.forEach((request) => {
+        if (!request) {
+            return;
+        }
+        const typeId = Number(request.room_type_id ?? request.id ?? request.room_type);
+        if (!Number.isFinite(typeId) || typeId <= 0) {
+            return;
+        }
+        const quantityValue = Number(request.quantity ?? request.count ?? 1);
+        const quantity = Number.isFinite(quantityValue) && quantityValue > 0 ? Math.round(quantityValue) : 1;
+        const key = String(typeId);
+        const current = aggregated.get(key) || { room_type_id: typeId, quantity: 0 };
+        current.quantity += quantity;
+        aggregated.set(key, current);
+    });
+    return Array.from(aggregated.values());
+}
+
+function setReservationRoomRequests(requests) {
+    state.pendingRoomRequests = normalizeClientRoomRequests(Array.isArray(requests) ? requests : []);
+    renderReservationRoomRequests();
+    updateReservationCapacityHint();
+}
+
+function addReservationRoomRequest(typeId, quantity = 1) {
+    const normalizedId = Number(typeId);
+    if (!Number.isFinite(normalizedId) || normalizedId <= 0) {
+        return;
     }
-    return roomIds.reduce((total, roomId) => {
-        const room = state.rooms.find((entry) => Number(entry.id) === Number(roomId));
-        const capacity = room ? Number(room.max_occupancy ?? room.base_occupancy ?? 0) : 0;
-        return Number.isFinite(capacity) ? total + capacity : total;
+    const normalizedQuantity = Number.isFinite(Number(quantity)) && Number(quantity) > 0 ? Math.round(Number(quantity)) : 1;
+    const existing = state.pendingRoomRequests.find((entry) => Number(entry.room_type_id) === normalizedId);
+    if (existing) {
+        existing.quantity += normalizedQuantity;
+    } else {
+        state.pendingRoomRequests.push({ room_type_id: normalizedId, quantity: normalizedQuantity });
+    }
+    renderReservationRoomRequests();
+    updateReservationCapacityHint();
+}
+
+function updateReservationRoomRequestQuantity(typeId, quantity) {
+    const normalizedId = Number(typeId);
+    if (!Number.isFinite(normalizedId) || normalizedId <= 0) {
+        return;
+    }
+    const normalizedQuantity = Number.isFinite(Number(quantity)) && Number(quantity) > 0 ? Math.round(Number(quantity)) : 1;
+    state.pendingRoomRequests = state.pendingRoomRequests.map((entry) => (
+        Number(entry.room_type_id) === normalizedId
+            ? { ...entry, quantity: normalizedQuantity }
+            : entry
+    ));
+    renderReservationRoomRequests();
+    updateReservationCapacityHint();
+}
+
+function removeReservationRoomRequest(typeId) {
+    const normalizedId = Number(typeId);
+    state.pendingRoomRequests = state.pendingRoomRequests.filter((entry) => Number(entry.room_type_id) !== normalizedId);
+    renderReservationRoomRequests();
+    updateReservationCapacityHint();
+}
+
+function calculateRoomRequestCapacityClient(requests = state.pendingRoomRequests) {
+    return requests.reduce((total, request) => {
+        const roomType = getRoomTypeById(request.room_type_id);
+        const capacity = Number(roomType?.max_occupancy ?? roomType?.base_occupancy ?? 0);
+        const quantity = Number(request.quantity ?? 0);
+        if (Number.isFinite(capacity) && capacity > 0 && Number.isFinite(quantity) && quantity > 0) {
+            return total + capacity * quantity;
+        }
+        return total;
     }, 0);
+}
+
+function renderReservationRoomRequests() {
+    if (!roomRequestList) {
+        return;
+    }
+
+    roomRequestList.innerHTML = '';
+    if (!state.pendingRoomRequests.length) {
+        const empty = document.createElement('p');
+        empty.className = 'muted small-text';
+        empty.textContent = 'Keine Kategorie ausgewählt.';
+        roomRequestList.appendChild(empty);
+        return;
+    }
+
+    const sorted = [...state.pendingRoomRequests].sort((a, b) => {
+        const typeA = getRoomTypeById(a.room_type_id)?.name || '';
+        const typeB = getRoomTypeById(b.room_type_id)?.name || '';
+        return typeA.localeCompare(typeB, 'de', { sensitivity: 'base' });
+    });
+
+    const fragment = document.createDocumentFragment();
+    sorted.forEach((request) => {
+        const container = document.createElement('div');
+        container.className = 'room-request-row';
+        container.dataset.roomTypeId = String(request.room_type_id);
+
+        const info = document.createElement('div');
+        info.className = 'room-request-info';
+        const roomType = getRoomTypeById(request.room_type_id);
+        const name = roomType?.name || `Kategorie ${request.room_type_id}`;
+        const capacity = Number(roomType?.max_occupancy ?? roomType?.base_occupancy ?? 0);
+        const title = document.createElement('strong');
+        title.textContent = name;
+        info.appendChild(title);
+        if (capacity > 0) {
+            const meta = document.createElement('span');
+            meta.className = 'room-request-meta';
+            meta.textContent = `Kapazität: ${capacity} Gäste`;
+            info.appendChild(meta);
+        }
+        container.appendChild(info);
+
+        const controls = document.createElement('div');
+        controls.className = 'room-request-actions';
+
+        const quantityLabel = document.createElement('label');
+        quantityLabel.className = 'inline-label';
+        quantityLabel.textContent = 'Anzahl';
+        const quantityInput = document.createElement('input');
+        quantityInput.type = 'number';
+        quantityInput.min = '1';
+        quantityInput.value = String(request.quantity);
+        quantityInput.dataset.role = 'room-request-quantity';
+        quantityLabel.appendChild(quantityInput);
+        controls.appendChild(quantityLabel);
+
+        const removeButton = document.createElement('button');
+        removeButton.type = 'button';
+        removeButton.className = 'secondary small';
+        removeButton.dataset.action = 'remove-room-request';
+        removeButton.textContent = 'Entfernen';
+        controls.appendChild(removeButton);
+
+        container.appendChild(controls);
+        fragment.appendChild(container);
+    });
+
+    roomRequestList.appendChild(fragment);
+}
+
+function deriveRoomRequestsFromRooms(rooms) {
+    if (!Array.isArray(rooms) || rooms.length === 0) {
+        return [];
+    }
+    const aggregated = new Map();
+    rooms.forEach((room) => {
+        const typeId = Number(room.room_type_id ?? room.room_type ?? 0);
+        if (!Number.isFinite(typeId) || typeId <= 0) {
+            return;
+        }
+        const key = String(typeId);
+        const current = aggregated.get(key) || { room_type_id: typeId, quantity: 0 };
+        current.quantity += 1;
+        aggregated.set(key, current);
+    });
+    return Array.from(aggregated.values());
 }
 
 function updateReservationCapacityHint() {
@@ -766,19 +929,17 @@ function updateReservationCapacityHint() {
     const adults = Number(reservationForm.adults?.value || 0);
     const children = Number(reservationForm.children?.value || 0);
     const guestTotal = adults + children;
-    const roomIds = reservationRoomsSelect
-        ? Array.from(reservationRoomsSelect.selectedOptions).map((option) => Number(option.value))
-        : [];
+    const requests = state.pendingRoomRequests;
 
-    if (!roomIds.length) {
-        reservationCapacityEl.textContent = 'Bitte mindestens ein Zimmer auswählen.';
+    if (!requests.length) {
+        reservationCapacityEl.textContent = 'Bitte mindestens eine Zimmerkategorie hinzufügen.';
         reservationCapacityEl.classList.remove('text-danger');
         return;
     }
 
-    const capacity = calculateRoomCapacity(roomIds);
+    const capacity = calculateRoomRequestCapacityClient(requests);
     if (capacity <= 0) {
-        reservationCapacityEl.textContent = '';
+        reservationCapacityEl.textContent = 'Für die ausgewählten Kategorien ist keine Kapazität hinterlegt.';
         reservationCapacityEl.classList.remove('text-danger');
         return;
     }
@@ -1117,6 +1278,7 @@ function resetReservationForm() {
     ensureReservationReferenceData();
     populateCompanyDropdowns();
     renderReservationArticleOptions();
+    setReservationRoomRequests([]);
     setGuestSelection(null);
     hideGuestSuggestions();
     if (reservationDetails) {
@@ -1141,17 +1303,6 @@ function fillReservationForm(reservation) {
     reservationForm.currency.value = reservation.currency || 'EUR';
     reservationForm.status.value = reservation.status || 'confirmed';
     reservationForm.booked_via.value = reservation.booked_via || '';
-    if (reservationForm.rate_plan) {
-        reservationForm.rate_plan.value = reservation.rate_plan_id ? String(reservation.rate_plan_id) : '';
-    }
-
-    const selectedRoomIds = new Set((reservation.rooms || []).map((room) => Number(room.room_id ?? room.id)));
-    if (reservationRoomsSelect) {
-        Array.from(reservationRoomsSelect.options).forEach((option) => {
-            option.selected = selectedRoomIds.has(Number(option.value));
-        });
-    }
-
     const guestSnapshot = {
         id: reservation.guest_id || null,
         first_name: reservation.first_name || '',
@@ -1164,8 +1315,40 @@ function fillReservationForm(reservation) {
 
     setGuestSelection(guestSnapshot);
     renderReservationArticleOptions(reservation.articles || []);
+    const roomRequestSource = Array.isArray(reservation.room_requests) && reservation.room_requests.length
+        ? reservation.room_requests
+        : deriveRoomRequestsFromRooms(reservation.rooms || []);
+    setReservationRoomRequests(roomRequestSource);
     updateReservationCapacityHint();
     updateReservationMeta(reservation);
+}
+
+function formatReservationAssignment(row) {
+    const rooms = Array.isArray(row.rooms) ? row.rooms : [];
+    if (rooms.length) {
+        return rooms
+            .map((room) => {
+                const number = room.room_number || room.name || `Zimmer ${room.room_id ?? room.id ?? ''}`;
+                const typeName = room.room_type_name ? ` (${room.room_type_name})` : '';
+                return escapeHtml(`${number}${typeName}`);
+            })
+            .join('<br>');
+    }
+
+    const requests = Array.isArray(row.room_requests) ? row.room_requests : [];
+    if (requests.length) {
+        const lines = requests
+            .map((request) => {
+                const type = request.room_type_name || getRoomTypeById(request.room_type_id)?.name || `Kategorie ${request.room_type_id}`;
+                const quantity = Number(request.quantity ?? 1);
+                const suffix = Number.isFinite(quantity) && quantity > 1 ? ` × ${quantity}` : '';
+                return `<div>${escapeHtml(`${type}${suffix}`)}</div>`;
+            })
+            .join('');
+        return `<div><strong>Überbuchung</strong>${lines}</div>`;
+    }
+
+    return '<span class="muted small-text">Noch nicht zugewiesen</span>';
 }
 
 async function startReservationEdit(reservationId) {
@@ -1215,7 +1398,7 @@ function renderReservationsTable(reservations) {
         { key: 'check_in_date', label: 'Check-in', render: (row) => formatDate(row.check_in_date) },
         { key: 'check_out_date', label: 'Check-out', render: (row) => formatDate(row.check_out_date) },
         { key: 'status', label: 'Status', render: (row) => formatReservationStatus(row.status) },
-        { key: 'rooms', label: 'Zimmer', render: (row) => (row.rooms || []).map((room) => room.room_number).join(', ') },
+        { key: 'rooms', label: 'Zuweisung', render: (row) => formatReservationAssignment(row) },
         { key: 'total_amount', label: 'Gesamt', render: (row) => formatCurrency(row.total_amount, row.currency || 'EUR') },
         {
             key: 'actions',
@@ -1422,11 +1605,22 @@ function renderOccupancyCalendar(rooms, reservations, startDateStr, days = CALEN
     const dayKeySet = new Set(dayKeys);
     const rangeEndExclusive = addDays(startDate, totalDays);
     const occupancyMap = new Map();
+    const overbookingRows = new Map();
     const reservationsList = Array.isArray(reservations) ? reservations : [];
 
+    const pushEntry = (rowId, dateKeyValue, entry) => {
+        const mapKey = `${rowId}_${dateKeyValue}`;
+        const bucket = occupancyMap.get(mapKey);
+        if (bucket) {
+            bucket.push(entry);
+        } else {
+            occupancyMap.set(mapKey, [entry]);
+        }
+    };
+
     reservationsList.forEach((reservation) => {
-        const status = normalizeStatusClass(reservation.status || '');
-        if (status === 'cancelled') {
+        const statusClass = normalizeStatusClass(reservation.status || '');
+        if (statusClass === 'cancelled') {
             return;
         }
         const checkIn = parseISODate(reservation.check_in_date);
@@ -1439,18 +1633,62 @@ function renderOccupancyCalendar(rooms, reservations, startDateStr, days = CALEN
         if (visibleEnd <= visibleStart) {
             return;
         }
+
+        const requestList = Array.isArray(reservation.room_requests) ? reservation.room_requests : [];
+
         (reservation.rooms || []).forEach((room) => {
             const roomId = room.room_id ?? room.id;
             if (!roomId) {
                 return;
             }
+            const rowKey = `room-${roomId}`;
             for (let cursor = new Date(visibleStart); cursor < visibleEnd; cursor = addDays(cursor, 1)) {
                 const keyDate = dateKey(cursor);
                 if (!dayKeySet.has(keyDate)) {
                     continue;
                 }
-                const key = `${roomId}_${keyDate}`;
-                occupancyMap.set(key, reservation);
+                pushEntry(rowKey, keyDate, {
+                    reservation,
+                    statusClass,
+                    roomTypeName: room.room_type_name || null,
+                    isOverbooking: false,
+                    quantity: 1,
+                });
+            }
+        });
+
+        requestList.forEach((request) => {
+            const typeId = Number(request.room_type_id ?? request.id ?? 0);
+            if (!Number.isFinite(typeId) || typeId <= 0) {
+                return;
+            }
+            const quantity = Number(request.quantity ?? 1);
+            const normalizedQuantity = Number.isFinite(quantity) && quantity > 0 ? quantity : 1;
+            const rowKey = `overbook-${typeId}`;
+            if (!overbookingRows.has(rowKey)) {
+                const roomType = getRoomTypeById(typeId);
+                const typeName = roomType?.name || request.room_type_name || `Kategorie ${typeId}`;
+                overbookingRows.set(rowKey, {
+                    calendar_id: rowKey,
+                    room_type_id: typeId,
+                    room_type_name: typeName,
+                    label: `Überbuchung – ${typeName}`,
+                    isOverbooking: true,
+                });
+            }
+            const roomTypeName = getRoomTypeById(typeId)?.name || request.room_type_name || `Kategorie ${typeId}`;
+            for (let cursor = new Date(visibleStart); cursor < visibleEnd; cursor = addDays(cursor, 1)) {
+                const keyDate = dateKey(cursor);
+                if (!dayKeySet.has(keyDate)) {
+                    continue;
+                }
+                pushEntry(rowKey, keyDate, {
+                    reservation,
+                    statusClass,
+                    roomTypeName,
+                    isOverbooking: true,
+                    quantity: normalizedQuantity,
+                });
             }
         });
     });
@@ -1495,21 +1733,33 @@ function renderOccupancyCalendar(rooms, reservations, startDateStr, days = CALEN
         return aValue.localeCompare(bValue, 'de', { numeric: true, sensitivity: 'base' });
     });
 
-    sortedRooms.forEach((room) => {
-        const row = document.createElement('tr');
+    const calendarRows = sortedRooms.map((room) => {
         const roomId = room.id ?? room.room_id;
-        if (!roomId) {
-            return;
+        return {
+            calendar_id: `room-${roomId}`,
+            label: room.room_type_name ? `${room.room_number || room.name || `Zimmer ${roomId}`} (${room.room_type_name})` : (room.room_number || room.name || `Zimmer ${roomId}`),
+            isOverbooking: false,
+        };
+    });
+
+    const overbookingRowList = Array.from(overbookingRows.values()).sort((a, b) => (a.room_type_name || '').localeCompare(b.room_type_name || '', 'de', { sensitivity: 'base' }));
+
+    [...calendarRows, ...overbookingRowList].forEach((rowInfo) => {
+        const row = document.createElement('tr');
+        if (rowInfo.isOverbooking) {
+            row.classList.add('overbooking-row');
         }
         const roomCell = document.createElement('th');
         roomCell.scope = 'row';
         roomCell.className = 'room';
-        const roomLabel = room.room_number || room.name || `Zimmer ${roomId}`;
-        roomCell.textContent = room.room_type_name ? `${roomLabel} (${room.room_type_name})` : roomLabel;
+        roomCell.textContent = rowInfo.label;
+        if (rowInfo.isOverbooking) {
+            roomCell.classList.add('overbooking');
+        }
         row.appendChild(roomCell);
 
         dayDates.forEach((date) => {
-            const key = `${roomId}_${dateKey(date)}`;
+            const key = `${rowInfo.calendar_id}_${dateKey(date)}`;
             const cell = document.createElement('td');
             cell.dataset.date = dateKey(date);
             if (cell.dataset.date === todayKey) {
@@ -1518,35 +1768,61 @@ function renderOccupancyCalendar(rooms, reservations, startDateStr, days = CALEN
             if (isWeekend(date)) {
                 cell.classList.add('weekend');
             }
-            const reservation = occupancyMap.get(key);
-            if (reservation) {
-                const statusClass = normalizeStatusClass(reservation.status || '');
+
+            const entries = occupancyMap.get(key) || [];
+            if (entries.length > 0) {
                 cell.classList.add('occupied');
-                if (statusClass) {
-                    cell.classList.add(`status-${statusClass}`);
+                if (entries.length > 1) {
+                    cell.classList.add('multi');
                 }
-                if (statusClass) {
-                    cell.dataset.status = statusClass;
+                const firstEntry = entries[0];
+                if (firstEntry.statusClass) {
+                    cell.classList.add(`status-${firstEntry.statusClass}`);
+                    cell.dataset.status = firstEntry.statusClass;
                 }
-                if (reservation.id) {
-                    cell.dataset.reservationId = String(reservation.id);
+                if (firstEntry.reservation?.id) {
+                    cell.dataset.reservationId = String(firstEntry.reservation.id);
+                } else {
+                    delete cell.dataset.reservationId;
                 }
-                const guestName = `${reservation.first_name || ''} ${reservation.last_name || ''}`.trim();
-                const label = getReservationCalendarLabel(reservation, labelMode);
-                const statusLabel = formatReservationStatus(reservation.status);
-                cell.textContent = label;
-                const details = [
-                    label !== guestName && guestName ? `Gast: ${guestName}` : guestName,
-                    reservation.company_name ? `Firma: ${reservation.company_name}` : null,
-                    reservation.confirmation_number ? `Bestätigungsnr.: ${reservation.confirmation_number}` : null,
-                    statusLabel ? `Status: ${statusLabel}` : null,
-                    reservation.check_in_date ? `Anreise: ${formatDate(reservation.check_in_date)}` : null,
-                    reservation.check_out_date ? `Abreise: ${formatDate(reservation.check_out_date)}` : null,
-                ].filter(Boolean);
-                cell.title = details.join('\n');
+                cell.textContent = '';
+                entries.forEach((entry) => {
+                    const entryDiv = document.createElement('div');
+                    entryDiv.className = 'calendar-entry';
+                    if (entry.statusClass) {
+                        entryDiv.classList.add(`status-${entry.statusClass}`);
+                    }
+                    if (entry.isOverbooking) {
+                        entryDiv.classList.add('overbooking');
+                    }
+                    if (entry.reservation?.id) {
+                        entryDiv.dataset.reservationId = String(entry.reservation.id);
+                    }
+                    const label = getReservationCalendarLabel(entry.reservation, labelMode);
+                    const quantitySuffix = entry.isOverbooking && entry.quantity > 1 ? ` ×${entry.quantity}` : '';
+                    const typeSuffix = entry.isOverbooking && entry.roomTypeName ? ` • ${entry.roomTypeName}` : '';
+                    entryDiv.textContent = `${label}${quantitySuffix}${typeSuffix}`;
+                    const guestName = `${entry.reservation.first_name || ''} ${entry.reservation.last_name || ''}`.trim();
+                    const statusLabel = formatReservationStatus(entry.reservation.status);
+                    const details = [
+                        label !== guestName && guestName ? `Gast: ${guestName}` : guestName,
+                        entry.reservation.company_name ? `Firma: ${entry.reservation.company_name}` : null,
+                        entry.reservation.confirmation_number ? `Bestätigungsnr.: ${entry.reservation.confirmation_number}` : null,
+                        statusLabel ? `Status: ${statusLabel}` : null,
+                        entry.reservation.check_in_date ? `Anreise: ${formatDate(entry.reservation.check_in_date)}` : null,
+                        entry.reservation.check_out_date ? `Abreise: ${formatDate(entry.reservation.check_out_date)}` : null,
+                        entry.isOverbooking && entry.roomTypeName ? `Kategorie: ${entry.roomTypeName}` : null,
+                        entry.isOverbooking && entry.quantity > 1 ? `Einheiten: ${entry.quantity}` : null,
+                    ].filter(Boolean);
+                    if (details.length) {
+                        entryDiv.title = details.join('\n');
+                    }
+                    cell.appendChild(entryDiv);
+                });
             } else {
                 cell.classList.add('vacant');
-                cell.textContent = 'Frei';
+                cell.textContent = rowInfo.isOverbooking ? 'Keine Überbuchung' : 'Frei';
+                delete cell.dataset.reservationId;
             }
             row.appendChild(cell);
         });
@@ -1586,7 +1862,6 @@ async function bootstrap() {
         updateInvoiceLogoPreview(logoData);
         await loadCalendarColors(true);
         populateRoomTypeSelects();
-        populateRatePlanSelect();
         populateRoomOptions();
         populateRoleCheckboxes();
         populateRoomTypeList();
@@ -1609,24 +1884,20 @@ async function bootstrap() {
 }
 
 function populateRoomTypeSelects() {
+    const sortedTypes = [...state.roomTypes].sort((a, b) => (a.name || '').localeCompare(b.name || '', 'de', { sensitivity: 'base' }));
     const roomSelect = document.querySelector('#room-form select[name="room_type"]');
     if (roomSelect) {
-        roomSelect.innerHTML = state.roomTypes.map((type) => `<option value="${type.id}">${type.name}</option>`).join('');
+        roomSelect.innerHTML = sortedTypes.map((type) => `<option value="${type.id}">${type.name}</option>`).join('');
     }
-}
-
-function populateRatePlanSelect() {
-    const ratePlanSelect = document.querySelector('#reservation-form select[name="rate_plan"]');
-    if (ratePlanSelect) {
-        const previousValue = ratePlanSelect.value;
-        const options = [...state.ratePlans]
-            .sort((a, b) => (a.name || '').localeCompare(b.name || '', 'de', { sensitivity: 'base' }))
-            .map((plan) => `<option value="${plan.id}">${plan.name}</option>`);
-        ratePlanSelect.innerHTML = `<option value="">Ohne Rate-Plan</option>${options.join('')}`;
-        if (previousValue && [...ratePlanSelect.options].some((option) => option.value === previousValue)) {
-            ratePlanSelect.value = previousValue;
+    if (roomRequestTypeSelect) {
+        const previousValue = roomRequestTypeSelect.value;
+        const options = sortedTypes.map((type) => `<option value="${type.id}">${type.name}</option>`);
+        roomRequestTypeSelect.innerHTML = `<option value="">Kategorie wählen</option>${options.join('')}`;
+        if (previousValue && [...roomRequestTypeSelect.options].some((option) => option.value === previousValue)) {
+            roomRequestTypeSelect.value = previousValue;
         }
     }
+    renderReservationRoomRequests();
 }
 
 function populateRoomOptions() {
@@ -1646,13 +1917,6 @@ function populateRoomOptions() {
         const typeLabel = room.room_type_name || 'Kategorie';
         return `<option value="${room.id}">${room.room_number} (${typeLabel}${capacityText})</option>`;
     });
-    if (reservationRoomsSelect) {
-        const selectedValues = new Set(Array.from(reservationRoomsSelect.selectedOptions || []).map((option) => option.value));
-        reservationRoomsSelect.innerHTML = options.join('');
-        Array.from(reservationRoomsSelect.options).forEach((option) => {
-            option.selected = selectedValues.has(option.value);
-        });
-    }
     if (taskRoomSelect) {
         taskRoomSelect.innerHTML = `<option value="">Kein Zimmer</option>${options.join('')}`;
     }
@@ -1661,12 +1925,23 @@ function populateRoomOptions() {
 
 async function ensureReservationReferenceData(force = false) {
     if (!state.token) {
-        populateRatePlanSelect();
         populateRoomOptions();
+        populateRoomTypeSelects();
         return;
     }
 
     const loaders = [];
+    if (force || state.roomTypes.length === 0) {
+        loaders.push(
+            apiFetch('room-types')
+                .then((roomTypes) => {
+                    state.roomTypes = Array.isArray(roomTypes) ? roomTypes : [];
+                })
+                .catch((error) => {
+                    showMessage(error.message, 'error');
+                }),
+        );
+    }
     if (force || state.ratePlans.length === 0) {
         loaders.push(
             apiFetch('rate-plans')
@@ -1694,8 +1969,8 @@ async function ensureReservationReferenceData(force = false) {
         await Promise.all(loaders);
     }
 
-    populateRatePlanSelect();
     populateRoomOptions();
+    populateRoomTypeSelects();
 }
 
 function populateRoleCheckboxes() {
@@ -2189,14 +2464,6 @@ if (reservationForm) {
         if (!requireToken()) {
             return;
         }
-        const rooms = reservationRoomsSelect
-            ? Array.from(reservationRoomsSelect.selectedOptions).map((option) => Number(option.value))
-            : [];
-        if (rooms.length === 0) {
-            showMessage('Bitte mindestens ein Zimmer auswählen.', 'error');
-            return;
-        }
-
         const adults = Number(reservationForm.adults.value || 0);
         const children = Number(reservationForm.children.value || 0);
         const totalGuests = adults + children;
@@ -2204,9 +2471,18 @@ if (reservationForm) {
             showMessage('Bitte mindestens einen Gast angeben.', 'error');
             return;
         }
-        const capacity = calculateRoomCapacity(rooms);
-        if (capacity > 0 && totalGuests > capacity) {
-            showMessage(`Die ausgewählten Zimmer bieten nur Platz für ${capacity} Gäste.`, 'error');
+        const requests = [...state.pendingRoomRequests];
+        if (!requests.length) {
+            showMessage('Bitte mindestens eine Zimmerkategorie auswählen.', 'error');
+            return;
+        }
+        const capacity = calculateRoomRequestCapacityClient(requests);
+        if (capacity <= 0) {
+            showMessage('Für die ausgewählten Kategorien ist keine Kapazität hinterlegt.', 'error');
+            return;
+        }
+        if (totalGuests > capacity) {
+            showMessage(`Die ausgewählten Kategorien bieten nur Platz für ${capacity} Gäste.`, 'error');
             return;
         }
 
@@ -2215,13 +2491,18 @@ if (reservationForm) {
             check_out_date: reservationForm.check_out.value,
             adults,
             children,
-            rate_plan_id: reservationForm.rate_plan.value ? Number(reservationForm.rate_plan.value) : null,
-            rooms,
             total_amount: reservationForm.total_amount.value ? Number(reservationForm.total_amount.value) : null,
             currency: reservationForm.currency.value || 'EUR',
             status: reservationForm.status.value,
             booked_via: reservationForm.booked_via.value || null,
         };
+
+        if (requests.length) {
+            payload.room_requests = requests.map((request) => ({
+                room_type_id: Number(request.room_type_id),
+                quantity: Number(request.quantity ?? 1),
+            }));
+        }
 
         if (reservationArticleContainer) {
             const selections = Array.from(reservationArticleContainer.querySelectorAll('.article-option')).map((option) => {
@@ -2293,8 +2574,52 @@ if (reservationCancelButton) {
     });
 }
 
-if (reservationRoomsSelect) {
-    reservationRoomsSelect.addEventListener('change', updateReservationCapacityHint);
+if (roomRequestAddButton) {
+    roomRequestAddButton.addEventListener('click', () => {
+        const selectedTypeId = roomRequestTypeSelect ? Number(roomRequestTypeSelect.value) : NaN;
+        if (!Number.isFinite(selectedTypeId) || selectedTypeId <= 0) {
+            showMessage('Bitte eine Zimmerkategorie auswählen.', 'error');
+            if (roomRequestTypeSelect) {
+                roomRequestTypeSelect.focus();
+            }
+            return;
+        }
+        const quantityValue = roomRequestQuantityInput ? Number(roomRequestQuantityInput.value || 1) : 1;
+        addReservationRoomRequest(selectedTypeId, quantityValue);
+        if (roomRequestQuantityInput) {
+            roomRequestQuantityInput.value = '1';
+        }
+    });
+}
+
+if (roomRequestList) {
+    roomRequestList.addEventListener('input', (event) => {
+        const target = event.target;
+        if (!(target instanceof HTMLInputElement) || target.dataset.role !== 'room-request-quantity') {
+            return;
+        }
+        const container = target.closest('.room-request-row');
+        if (!container) {
+            return;
+        }
+        const typeId = Number(container.dataset.roomTypeId);
+        const value = Number(target.value || 1);
+        updateReservationRoomRequestQuantity(typeId, value);
+    });
+    roomRequestList.addEventListener('click', (event) => {
+        const target = event.target;
+        if (!(target instanceof HTMLButtonElement)) {
+            return;
+        }
+        if (target.dataset.action === 'remove-room-request') {
+            const container = target.closest('.room-request-row');
+            if (!container) {
+                return;
+            }
+            const typeId = Number(container.dataset.roomTypeId);
+            removeReservationRoomRequest(typeId);
+        }
+    });
 }
 
 if (reservationArticleContainer) {
@@ -2481,7 +2806,6 @@ document.getElementById('rate-plan-form').addEventListener('submit', async (even
         showMessage('Rate-Plan angelegt.', 'success');
         const ratePlans = await apiFetch('rate-plans');
         state.ratePlans = ratePlans;
-        populateRatePlanSelect();
         populateRatePlanList();
         await ensureReservationReferenceData(true);
     } catch (error) {
