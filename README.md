@@ -100,6 +100,7 @@ Nach dem erfolgreichen Datenbank-Setup stellt `backend/api/index.php` eine schla
 - `POST /backend/api/invoices` – Erstellt Rechnungen mit beliebig vielen Positionen; Netto-/Steuer-/Brutto-Summen werden automatisch berechnet.
 - `POST /backend/api/payments` – Verbucht Zahlungen (Bar, Karte, externes Gateway) und verknüpft sie mit Rechnungen.
 - `GET /backend/api/invoices/{id}/pdf` – Rendert die Rechnung als PDF (inkl. Rechnungslogo, Netto-/MwSt.-Ausweis und Artikellisten) über die mitgelieferte FPDF-Library.
+  - **Wichtig:** Lade die Standard-Schriftdateien der FPDF-Library (z. B. `helvetica.php`, `courier.php`) manuell in `backend/lib/font/` hoch; sie sind aus lizenzrechtlichen Gründen nicht im Repository enthalten.
 - `GET|POST|PATCH|DELETE /backend/api/articles` – Verwalte abrechenbare Artikel (z. B. Frühstück, Parkplatz). Die Felder `charge_scheme`, `unit_price` und `tax_rate` sorgen dafür, dass Mehrwertsteuer nach deutschem Recht (Standard 19 %, optional z. B. 7 %) korrekt in Rechnungen einfließt.
 
 ### Berichte & Analytics
