@@ -122,6 +122,7 @@ Nach dem erfolgreichen Datenbank-Setup stellt `backend/api/index.php` eine schla
 - `GET /backend/api/settings` – Liefert die verfügbaren Einstellungsbereiche.
 - `GET|PUT|DELETE /backend/api/settings/calendar-colors` – Liest, speichert oder setzt die Kalenderfarben zurück. `PUT` erwartet ein Objekt nach dem Schema `{ "colors": { "confirmed": "#2563eb", "checked_in": "#16a34a", ... } }`.
 - `GET|PUT|DELETE /backend/api/settings/invoice-logo` – Lädt das Rechnungslogo als Base64-Daten, speichert neue Uploads oder entfernt vorhandene Logos.
+- `GET|PUT|DELETE /backend/api/settings/invoice-storage` – Konfiguriert den automatischen Upload von PDF-Rechnungen auf eine Hetzner Storage Box via WebDAV.
 
 ### Gästeportal / Self-Service
 - `GET /backend/api/guest-portal/reservations/{confirmation}` – Gäste sehen Reservierungsdetails, Zimmer und Dokumente.

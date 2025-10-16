@@ -557,6 +557,7 @@ button.status-action:disabled:hover {
 
 .checkbox-inline {
     display: flex;
+    flex-direction: row;
     align-items: center;
     gap: .5rem;
     font-weight: 600;

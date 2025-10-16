@@ -619,6 +619,34 @@
                 </div>
             </form>
         </div>
+        <div class="panel">
+            <h3>Hetzner Storage Box</h3>
+            <p class="muted">Sichern Sie PDF-Rechnungen automatisch per WebDAV auf Ihrer Hetzner Storage Box.</p>
+            <form id="invoice-storage-form" class="stacked-form">
+                <label class="checkbox-inline">
+                    <input type="checkbox" name="enabled">
+                    <span>Automatisches Hochladen aktivieren</span>
+                </label>
+                <label>WebDAV-Basis-URL
+                    <input type="url" name="base_url" placeholder="https://u12345.your-storagebox.de/dav" autocomplete="url">
+                </label>
+                <label>Unterordner (optional)
+                    <input type="text" name="directory" placeholder="z.&nbsp;B. invoices">
+                </label>
+                <label>Benutzername
+                    <input type="text" name="username" autocomplete="username">
+                </label>
+                <label>Passwort
+                    <input type="password" name="password" autocomplete="new-password" placeholder="Nur ausfüllen, um das Passwort zu ändern">
+                </label>
+                <p id="invoice-storage-password-note" class="small-text"></p>
+                <p id="invoice-storage-status" class="small-text"></p>
+                <div class="form-actions">
+                    <button type="submit">Speichern</button>
+                    <button type="button" id="invoice-storage-clear" class="secondary">Zugangsdaten entfernen</button>
+                </div>
+            </form>
+        </div>
     </section>
 
     <section id="guest-portal" data-section>
