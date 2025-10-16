@@ -96,8 +96,40 @@
                             <a id="reservation-invoice-link" class="meta-link hidden" href="#" target="_blank" rel="noopener">PDF öffnen</a>
                             <button type="button" id="reservation-create-invoice">Rechnung erstellen</button>
                             <button type="button" id="reservation-pay-invoice" class="secondary">Als bezahlt verbuchen</button>
+                            <button type="button" id="reservation-close-invoice" class="secondary">Rechnung abschließen</button>
                         </div>
                         <p id="reservation-invoice-status" class="muted small-text"></p>
+                    </div>
+                    <div class="reservation-meta-block">
+                        <span class="meta-label">Warenkorb</span>
+                        <div class="meta-actions">
+                            <button type="button" id="reservation-cart-add" class="secondary">Position hinzufügen</button>
+                            <button type="button" id="reservation-cart-refresh" class="secondary">Aktualisieren</button>
+                        </div>
+                        <ul id="reservation-cart-items" class="meta-list"></ul>
+                        <p id="reservation-cart-total" class="muted small-text"></p>
+                        <form id="reservation-cart-form" class="cart-form hidden">
+                            <div class="cart-form-row">
+                                <label>Beschreibung
+                                    <input type="text" name="description" required>
+                                </label>
+                            </div>
+                            <div class="cart-form-grid">
+                                <label>Menge
+                                    <input type="number" name="quantity" step="0.01" min="0.01" value="1">
+                                </label>
+                                <label>Einzelpreis
+                                    <input type="number" name="unit_price" step="0.01" value="0">
+                                </label>
+                                <label>MwSt %
+                                    <input type="number" name="tax_rate" step="0.01" value="7">
+                                </label>
+                            </div>
+                            <div class="cart-form-actions">
+                                <button type="submit">Speichern</button>
+                                <button type="button" id="reservation-cart-cancel" class="secondary">Abbrechen</button>
+                            </div>
+                        </form>
                     </div>
                 </div>
                 <fieldset>
@@ -228,8 +260,8 @@
                     <label>Name
                         <input type="text" name="name" required>
                     </label>
-                    <label>Grundpreis
-                        <input type="number" name="base_price" min="0" step="0.01">
+                    <label>Max. Personen
+                        <input type="number" name="max_occupancy" min="1" step="1" required>
                     </label>
                     <label>Beschreibung
                         <textarea name="description" rows="3"></textarea>
@@ -650,6 +682,20 @@
                     <button type="button" id="invoice-storage-clear" class="secondary">Zugangsdaten entfernen</button>
                 </div>
             </form>
+        </div>
+        <div class="panel">
+            <h3>System-Update</h3>
+            <p class="muted">Starten Sie das bereitgestellte Update-Skript mit Ihrem geheimen Token.</p>
+            <form id="system-update-form" class="stacked-form">
+                <label>Update-Token
+                    <input type="password" id="system-update-token" name="token" autocomplete="off" placeholder="Geheimes Token" required>
+                </label>
+                <div class="form-actions">
+                    <button type="submit">Update ausführen</button>
+                </div>
+            </form>
+            <p id="system-update-status" class="small-text muted"></p>
+            <pre id="system-update-log" class="small-text hidden"></pre>
         </div>
     </section>
 
