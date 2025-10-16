@@ -59,6 +59,8 @@ const state = {
     currentReservationCartItems: [],
     currentReservationCurrency: 'EUR',
     invoiceStorageSettings: { ...DEFAULT_INVOICE_STORAGE_SETTINGS },
+    guestLookupResults: [],
+    guestLookupTerm: '',
 };
 
 const CALENDAR_DAYS = 14;
@@ -155,6 +157,20 @@ const invoiceStorageClearButton = document.getElementById('invoice-storage-clear
 
 let guestLookupDebounceId = null;
 let guestLookupRequestId = 0;
+
+function getReservationRatePlanSelect() {
+    if (!reservationForm) {
+        return null;
+    }
+    return reservationRatePlanSelect || reservationForm.querySelector('select[name="rate_plan"]');
+}
+
+function getReservationRoomsSelect() {
+    if (!reservationForm) {
+        return null;
+    }
+    return reservationRoomsSelect || reservationForm.querySelector('select[name="rooms"]');
+}
 
 const RESERVATION_STATUS_LABELS = {
     tentative: 'Voranfrage',
@@ -1130,8 +1146,9 @@ function updateReservationCapacityHint() {
     const adults = Number(reservationAdultsInput?.value || 0);
     const children = Number(reservationChildrenInput?.value || 0);
     const guestTotal = adults + children;
-    const roomIds = reservationRoomsSelect
-        ? Array.from(reservationRoomsSelect.selectedOptions).map((option) => Number(option.value))
+    const roomsSelect = getReservationRoomsSelect();
+    const roomIds = roomsSelect
+        ? Array.from(roomsSelect.selectedOptions).map((option) => Number(option.value))
         : [];
 
     if (!roomIds.length) {
@@ -1507,6 +1524,11 @@ function fillReservationForm(reservation) {
     populateRoomOptions();
     populateCompanyDropdowns();
 
+    const ratePlanSelect = getReservationRatePlanSelect();
+    if (ratePlanSelect) {
+        ratePlanSelect.value = reservation.rate_plan_id ? String(reservation.rate_plan_id) : '';
+    }
+
     if (reservationCheckInInput) {
         reservationCheckInInput.value = reservation.check_in_date ? reservation.check_in_date.slice(0, 10) : '';
     }
@@ -1533,8 +1555,9 @@ function fillReservationForm(reservation) {
     }
 
     const selectedRoomIds = new Set((reservation.rooms || []).map((room) => Number(room.room_id ?? room.id)));
-    if (reservationRoomsSelect) {
-        Array.from(reservationRoomsSelect.options).forEach((option) => {
+    const roomsSelect = getReservationRoomsSelect();
+    if (roomsSelect) {
+        Array.from(roomsSelect.options).forEach((option) => {
             option.selected = selectedRoomIds.has(Number(option.value));
         });
     }
@@ -2004,9 +2027,15 @@ function populateRoomTypeSelects() {
 }
 
 function populateRatePlanSelect() {
-    if (reservationRatePlanSelect) {
-        const options = state.ratePlans.map((plan) => `<option value="${plan.id}">${plan.name}</option>`);
-        reservationRatePlanSelect.innerHTML = `<option value="">Ohne Rate-Plan</option>${options.join('')}`;
+    const ratePlanSelect = getReservationRatePlanSelect();
+    if (!ratePlanSelect) {
+        return;
+    }
+    const previousValue = ratePlanSelect.value;
+    const options = state.ratePlans.map((plan) => `<option value="${plan.id}">${plan.name}</option>`);
+    ratePlanSelect.innerHTML = `<option value="">Ohne Rate-Plan</option>${options.join('')}`;
+    if (previousValue && [...ratePlanSelect.options].some((option) => option.value === previousValue)) {
+        ratePlanSelect.value = previousValue;
     }
 }
 
@@ -2018,10 +2047,11 @@ function populateRoomOptions() {
         const typeLabel = room.room_type_name || 'Kategorie';
         return `<option value="${room.id}">${room.room_number} (${typeLabel}${capacityText})</option>`;
     });
-    if (reservationRoomsSelect) {
-        const selectedValues = new Set(Array.from(reservationRoomsSelect.selectedOptions || []).map((option) => option.value));
-        reservationRoomsSelect.innerHTML = options.join('');
-        Array.from(reservationRoomsSelect.options).forEach((option) => {
+    const roomsSelect = getReservationRoomsSelect();
+    if (roomsSelect) {
+        const selectedValues = new Set(Array.from(roomsSelect.selectedOptions || []).map((option) => option.value));
+        roomsSelect.innerHTML = options.join('');
+        Array.from(roomsSelect.options).forEach((option) => {
             option.selected = selectedValues.has(option.value);
         });
     }
@@ -2526,8 +2556,9 @@ if (reservationForm) {
         if (!requireToken()) {
             return;
         }
-        const rooms = reservationRoomsSelect
-            ? Array.from(reservationRoomsSelect.selectedOptions).map((option) => Number(option.value))
+        const roomsSelect = getReservationRoomsSelect();
+        const rooms = roomsSelect
+            ? Array.from(roomsSelect.selectedOptions).map((option) => Number(option.value))
             : [];
         if (rooms.length === 0) {
             showMessage('Bitte mindestens ein Zimmer auswählen.', 'error');
@@ -2552,9 +2583,12 @@ if (reservationForm) {
             check_out_date: reservationCheckOutInput ? reservationCheckOutInput.value : '',
             adults,
             children,
-            rate_plan_id: reservationRatePlanSelect && reservationRatePlanSelect.value
-                ? Number(reservationRatePlanSelect.value)
-                : null,
+            rate_plan_id: (() => {
+                const ratePlanSelect = getReservationRatePlanSelect();
+                return ratePlanSelect && ratePlanSelect.value
+                    ? Number(ratePlanSelect.value)
+                    : null;
+            })(),
             rooms,
             total_amount: reservationTotalAmountInput && reservationTotalAmountInput.value
                 ? Number(reservationTotalAmountInput.value)
@@ -2568,7 +2602,11 @@ if (reservationForm) {
             booked_via: reservationBookedViaInput && reservationBookedViaInput.value
                 ? reservationBookedViaInput.value
                 : null,
+            notes: reservationForm && reservationForm.notes ? reservationForm.notes.value : '',
         };
+
+        const ratePlanId = payload.rate_plan_id;
+        payload.rate_plan_id = Number.isFinite(ratePlanId) ? ratePlanId : null;
 
         if (reservationArticleContainer) {
             const selections = Array.from(reservationArticleContainer.querySelectorAll('.article-option')).map((option) => {
@@ -2644,8 +2682,17 @@ if (reservationCancelButton) {
     });
 }
 
-if (reservationRoomsSelect) {
-    reservationRoomsSelect.addEventListener('change', updateReservationCapacityHint);
+const reservationRoomsSelectForEvents = getReservationRoomsSelect();
+if (reservationRoomsSelectForEvents) {
+    reservationRoomsSelectForEvents.addEventListener('change', updateReservationCapacityHint);
+}
+
+if (reservationAdultsInput) {
+    reservationAdultsInput.addEventListener('input', updateReservationCapacityHint);
+}
+
+if (reservationChildrenInput) {
+    reservationChildrenInput.addEventListener('input', updateReservationCapacityHint);
 }
 
 if (reservationAdultsInput) {
