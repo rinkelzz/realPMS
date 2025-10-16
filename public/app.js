@@ -175,6 +175,7 @@ const systemUpdateStatus = document.getElementById('system-update-status');
 
 let guestLookupDebounceId = null;
 let guestLookupRequestId = 0;
+let reservationOptionsLoadPromise = null;
 
 function getReservationRatePlanSelect() {
     if (!reservationForm) {
@@ -1562,8 +1563,7 @@ function resetReservationForm() {
     if (reservationCancelButton) {
         reservationCancelButton.classList.add('hidden');
     }
-    populateRatePlanSelect();
-    populateRoomOptions();
+    void ensureReservationOptionsLoaded();
     populateCompanyDropdowns();
     renderReservationArticleOptions();
     setGuestSelection(null);
@@ -1575,12 +1575,11 @@ function resetReservationForm() {
     updateReservationMeta(null);
 }
 
-function fillReservationForm(reservation) {
+async function fillReservationForm(reservation) {
     if (!reservationForm) {
         return;
     }
-    populateRatePlanSelect();
-    populateRoomOptions();
+    await ensureReservationOptionsLoaded();
     populateCompanyDropdowns();
 
     const ratePlanSelect = getReservationRatePlanSelect();
@@ -1661,7 +1660,7 @@ async function startReservationEdit(reservationId) {
         if (reservationDetails) {
             reservationDetails.open = true;
         }
-        fillReservationForm(reservation);
+        await fillReservationForm(reservation);
         await loadReservationCart(reservation.id);
     } catch (error) {
         showMessage(error.message, 'error');
@@ -2118,6 +2117,74 @@ function populateRoomOptions() {
         taskRoomSelect.innerHTML = `<option value="">Kein Zimmer</option>${options.join('')}`;
     }
     updateReservationCapacityHint();
+}
+
+async function ensureReservationOptionsLoaded(force = false) {
+    if (!reservationForm) {
+        return;
+    }
+
+    const needsRatePlans = force || state.ratePlans.length === 0;
+    const needsRooms = force || state.rooms.length === 0;
+
+    if (!needsRatePlans && !needsRooms) {
+        populateRatePlanSelect();
+        populateRoomOptions();
+        return;
+    }
+
+    if (!state.token) {
+        populateRatePlanSelect();
+        populateRoomOptions();
+        return;
+    }
+
+    if (!force && reservationOptionsLoadPromise) {
+        try {
+            await reservationOptionsLoadPromise;
+        } catch (error) {
+            // errors are handled in the original request
+        }
+        populateRatePlanSelect();
+        populateRoomOptions();
+        return;
+    }
+
+    reservationOptionsLoadPromise = (async () => {
+        const tasks = [];
+        if (needsRatePlans) {
+            tasks.push(
+                apiFetch('rate-plans')
+                    .then((ratePlans) => {
+                        state.ratePlans = Array.isArray(ratePlans) ? ratePlans : [];
+                        populateRatePlanList();
+                    })
+            );
+        }
+        if (needsRooms) {
+            tasks.push(
+                apiFetch('rooms')
+                    .then((rooms) => {
+                        state.rooms = Array.isArray(rooms) ? rooms : [];
+                    })
+            );
+        }
+        if (tasks.length === 0) {
+            return;
+        }
+        await Promise.all(tasks);
+    })();
+
+    try {
+        await reservationOptionsLoadPromise;
+    } catch (error) {
+        showMessage(error.message, 'error');
+    } finally {
+        reservationOptionsLoadPromise = null;
+    }
+
+    populateRatePlanSelect();
+    populateRoomOptions();
 }
 
 function populateRoleCheckboxes() {
@@ -2615,6 +2682,14 @@ const sectionLoaders = {
 };
 
 // Form submissions
+
+if (reservationDetails) {
+    reservationDetails.addEventListener('toggle', () => {
+        if (reservationDetails.open) {
+            void ensureReservationOptionsLoaded();
+        }
+    });
+}
 
 if (reservationForm) {
     reservationForm.addEventListener('submit', async (event) => {
