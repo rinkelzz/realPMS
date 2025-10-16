@@ -394,11 +394,21 @@ function handleGuests(string $method, array $segments): void
 
         $query = 'SELECT g.*, c.name AS company_name FROM guests g LEFT JOIN companies c ON c.id = g.company_id';
         $params = [];
+        $limit = null;
         if (isset($_GET['search']) && $_GET['search'] !== '') {
             $query .= ' WHERE CONCAT(g.first_name, " ", g.last_name) LIKE :search OR g.email LIKE :search';
             $params['search'] = '%' . $_GET['search'] . '%';
         }
         $query .= ' ORDER BY g.last_name, g.first_name';
+        if (isset($_GET['limit'])) {
+            $limitValue = (int) $_GET['limit'];
+            if ($limitValue > 0) {
+                $limit = min($limitValue, 100);
+            }
+        }
+        if ($limit !== null) {
+            $query .= ' LIMIT ' . $limit;
+        }
         $stmt = $pdo->prepare($query);
         $stmt->execute($params);
         jsonResponse($stmt->fetchAll());

@@ -124,11 +124,15 @@
                 </fieldset>
                 <fieldset>
                     <legend>Gast</legend>
-                    <label>Gast auswählen
-                        <select name="guest_id">
-                            <option value="">Neuer Gast</option>
-                        </select>
-                    </label>
+                    <div class="guest-search-row">
+                        <label>Gast suchen
+                            <input type="text" name="guest_search" placeholder="Name, E-Mail oder Firma" autocomplete="off">
+                            <div id="guest-search-results" class="guest-suggestions hidden"></div>
+                        </label>
+                        <button type="button" id="guest-clear-selection" class="secondary small hidden">Auswahl löschen</button>
+                    </div>
+                    <input type="hidden" name="guest_id">
+                    <p class="muted small-text">Mindestens 2 Zeichen eingeben, um bestehende Gäste zu finden. Leerlassen für einen neuen Gast.</p>
                     <label>Vorname
                         <input type="text" name="guest_first" required>
                     </label>
