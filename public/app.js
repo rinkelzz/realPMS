@@ -2504,6 +2504,8 @@ if (reservationForm) {
             }));
         }
 
+        const isEdit = Boolean(state.editingReservationId);
+
         if (reservationArticleContainer) {
             const selections = Array.from(reservationArticleContainer.querySelectorAll('.article-option')).map((option) => {
                 const checkbox = option.querySelector('input[type="checkbox"]');
@@ -2536,8 +2538,6 @@ if (reservationForm) {
         if (reservationGuestCompanySelect) {
             guestPayload.company_id = reservationGuestCompanySelect.value ? Number(reservationGuestCompanySelect.value) : null;
         }
-
-        const isEdit = Boolean(state.editingReservationId);
 
         if (selectedGuestId) {
             payload.guest_id = selectedGuestId;
