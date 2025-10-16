@@ -2278,10 +2278,20 @@ function outputInvoicePdf(int $invoiceId): void
     $pdf->Cell(array_sum($widths) - $widths[4], 8, '', 0, 0);
     $pdf->Cell($widths[4], 8, pdfText('Gesamt: ' . number_format($totalAmount, 2, ',', '.') . ' ' . $currency), 0, 1, 'R');
 
-    header('Content-Type: application/pdf');
     $filename = sprintf('Rechnung-%s.pdf', $invoice['invoice_number'] ?? $invoiceId);
-    header('Content-Disposition: inline; filename="' . $filename . '"');
-    $pdf->Output('I', $filename);
+    $pdfBinary = $pdf->Output('S');
+
+    if (is_string($pdfBinary) && $pdfBinary !== '') {
+        uploadInvoicePdfToStorageBox($invoice, $filename, $pdfBinary);
+        header('Content-Type: application/pdf');
+        header('Content-Disposition: inline; filename="' . $filename . '"');
+        header('Content-Length: ' . strlen($pdfBinary));
+        echo $pdfBinary;
+    } else {
+        header('Content-Type: application/pdf');
+        header('Content-Disposition: inline; filename="' . $filename . '"');
+        $pdf->Output('I', $filename);
+    }
     exit;
 }
 
@@ -2663,7 +2673,7 @@ function handleSettings(string $method, array $segments): void
     if ($subresource === null) {
         if ($method === 'GET') {
             jsonResponse([
-                'resources' => ['calendar-colors', 'invoice-logo'],
+                'resources' => ['calendar-colors', 'invoice-logo', 'invoice-storage'],
             ]);
         }
         jsonResponse(['error' => 'Unsupported method.'], 405);
@@ -2757,6 +2767,34 @@ function handleSettings(string $method, array $segments): void
                 'logo' => $dataUrl,
                 'updated_at' => $descriptor['updated_at'] ?? null,
             ]);
+        }
+
+        jsonResponse(['error' => 'Unsupported method.'], 405);
+    }
+
+    if ($subresource === 'invoice-storage') {
+        if ($method === 'GET') {
+            jsonResponse(getInvoiceStorageConfig());
+        }
+
+        if ($method === 'DELETE') {
+            jsonResponse(clearInvoiceStorageConfig());
+        }
+
+        if ($method === 'POST' || $method === 'PUT' || $method === 'PATCH') {
+            $data = parseJsonBody();
+            if (!is_array($data)) {
+                $data = [];
+            }
+            try {
+                $settings = saveInvoiceStorageConfig($data);
+            } catch (InvalidArgumentException $exception) {
+                jsonResponse(['error' => $exception->getMessage()], 422);
+            } catch (RuntimeException $exception) {
+                jsonResponse(['error' => $exception->getMessage()], 422);
+            }
+
+            jsonResponse($settings);
         }
 
         jsonResponse(['error' => 'Unsupported method.'], 405);
@@ -2986,4 +3024,264 @@ function deleteInvoiceLogo(): void
     setSetting('invoice_logo_path', null);
     setSetting('invoice_logo_mime', null);
     setSetting('invoice_logo_updated_at', null);
+}
+
+function normalizeInvoiceStorageBaseUrl(string $baseUrl): string
+{
+    $trimmed = trim($baseUrl);
+    if ($trimmed === '') {
+        return '';
+    }
+
+    if (!preg_match('#^https?://#i', $trimmed)) {
+        $trimmed = 'https://' . ltrim($trimmed, '/');
+    }
+
+    $parts = parse_url($trimmed);
+    if ($parts === false || empty($parts['scheme']) || empty($parts['host'])) {
+        throw new InvalidArgumentException('Ungültige WebDAV-URL für die Storage Box.');
+    }
+
+    $scheme = strtolower($parts['scheme']);
+    if (!in_array($scheme, ['http', 'https'], true)) {
+        throw new InvalidArgumentException('Die Storage-Box-URL muss mit http:// oder https:// beginnen.');
+    }
+
+    $host = strtolower($parts['host']);
+    $normalized = $scheme . '://' . $host;
+    if (isset($parts['port']) && $parts['port']) {
+        $normalized .= ':' . (int) $parts['port'];
+    }
+    if (isset($parts['path']) && $parts['path'] !== '') {
+        $normalized .= rtrim($parts['path'], '/');
+    }
+
+    return $normalized;
+}
+
+function normalizeInvoiceStorageDirectory(string $path): array
+{
+    $trimmed = trim($path);
+    if ($trimmed === '') {
+        return [];
+    }
+
+    $normalized = preg_replace('#/+#', '/', str_replace('\\', '/', $trimmed));
+    $segments = array_filter(explode('/', trim((string) $normalized, '/')), 'strlen');
+    $safeSegments = [];
+    foreach ($segments as $segment) {
+        if ($segment === '.' || $segment === '..') {
+            throw new InvalidArgumentException('Der Unterordner darf keine relativen Pfade enthalten.');
+        }
+        $safeSegments[] = $segment;
+    }
+
+    return $safeSegments;
+}
+
+function invoiceStorageDirectorySegments(?string $path): array
+{
+    if ($path === null || $path === '') {
+        return [];
+    }
+
+    return normalizeInvoiceStorageDirectory($path);
+}
+
+function getInvoiceStorageConfig(bool $includeSensitive = false): array
+{
+    $enabled = filter_var(getSetting('invoice_storage_enabled'), FILTER_VALIDATE_BOOLEAN);
+    $baseUrl = getSetting('invoice_storage_base_url') ?? '';
+    $directory = getSetting('invoice_storage_directory') ?? '';
+    $username = getSetting('invoice_storage_username') ?? '';
+    $passwordValue = getSetting('invoice_storage_password');
+
+    $config = [
+        'enabled' => (bool) $enabled,
+        'base_url' => $baseUrl,
+        'directory' => $directory,
+        'username' => $username,
+        'password_set' => $passwordValue !== null && $passwordValue !== '',
+    ];
+
+    if ($includeSensitive) {
+        $config['password'] = $passwordValue ?? '';
+    }
+
+    return $config;
+}
+
+function saveInvoiceStorageConfig(array $payload): array
+{
+    $enabled = !empty($payload['enabled']);
+    $baseUrlInput = isset($payload['base_url']) ? (string) $payload['base_url'] : '';
+    $directoryInput = isset($payload['directory']) ? (string) $payload['directory'] : '';
+    $username = isset($payload['username']) ? trim((string) $payload['username']) : '';
+    $passwordProvided = array_key_exists('password', $payload);
+    $password = $passwordProvided ? (string) $payload['password'] : '';
+
+    $normalizedBaseUrl = '';
+    if ($baseUrlInput !== '') {
+        $normalizedBaseUrl = normalizeInvoiceStorageBaseUrl($baseUrlInput);
+    }
+
+    $normalizedDirectory = '';
+    if ($directoryInput !== '') {
+        $segments = normalizeInvoiceStorageDirectory($directoryInput);
+        $normalizedDirectory = implode('/', $segments);
+    }
+
+    if ($enabled) {
+        if ($normalizedBaseUrl === '') {
+            throw new InvalidArgumentException('Bitte geben Sie die WebDAV-Basis-URL Ihrer Storage Box an.');
+        }
+        if ($username === '') {
+            throw new InvalidArgumentException('Bitte geben Sie den Storage-Box-Benutzernamen an.');
+        }
+        if ($passwordProvided) {
+            if ($password === '') {
+                throw new InvalidArgumentException('Das Storage-Box-Passwort darf nicht leer sein.');
+            }
+        } else {
+            $currentPassword = getSetting('invoice_storage_password');
+            if ($currentPassword === null || $currentPassword === '') {
+                throw new InvalidArgumentException('Bitte geben Sie das Storage-Box-Passwort an.');
+            }
+        }
+    }
+
+    setSetting('invoice_storage_enabled', $enabled ? '1' : '0');
+    setSetting('invoice_storage_base_url', $normalizedBaseUrl !== '' ? $normalizedBaseUrl : null);
+    setSetting('invoice_storage_directory', $normalizedDirectory !== '' ? $normalizedDirectory : null);
+    setSetting('invoice_storage_username', $username !== '' ? $username : null);
+
+    if ($passwordProvided) {
+        setSetting('invoice_storage_password', $password !== '' ? $password : null);
+    }
+
+    return getInvoiceStorageConfig();
+}
+
+function clearInvoiceStorageConfig(): array
+{
+    setSetting('invoice_storage_enabled', null);
+    setSetting('invoice_storage_base_url', null);
+    setSetting('invoice_storage_directory', null);
+    setSetting('invoice_storage_username', null);
+    setSetting('invoice_storage_password', null);
+
+    return getInvoiceStorageConfig();
+}
+
+function webdavRequest(string $method, string $url, string $username, string $password, ?string $body = null, array $headers = []): array
+{
+    if (!function_exists('curl_init')) {
+        throw new RuntimeException('cURL-Unterstützung ist für den Storage-Box-Upload erforderlich.');
+    }
+
+    $ch = curl_init($url);
+    if ($ch === false) {
+        throw new RuntimeException('Konnte keine Verbindung zur Storage Box herstellen.');
+    }
+
+    curl_setopt($ch, CURLOPT_CUSTOMREQUEST, $method);
+    curl_setopt($ch, CURLOPT_USERPWD, $username . ':' . $password);
+    curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+    curl_setopt($ch, CURLOPT_FOLLOWLOCATION, true);
+    curl_setopt($ch, CURLOPT_MAXREDIRS, 3);
+    curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, 10);
+    curl_setopt($ch, CURLOPT_TIMEOUT, 20);
+
+    if ($body !== null) {
+        curl_setopt($ch, CURLOPT_POSTFIELDS, $body);
+        $headers[] = 'Content-Length: ' . strlen($body);
+    }
+
+    if (!array_filter($headers, static function ($value) {
+        $lower = strtolower((string) $value);
+        return strpos($lower, 'expect') === 0;
+    })) {
+        $headers[] = 'Expect:';
+    }
+
+    if ($headers) {
+        curl_setopt($ch, CURLOPT_HTTPHEADER, $headers);
+    }
+
+    $responseBody = curl_exec($ch);
+    if ($responseBody === false) {
+        $error = curl_error($ch);
+        curl_close($ch);
+        throw new RuntimeException('Storage-Box-Anfrage fehlgeschlagen: ' . $error);
+    }
+
+    $statusCode = (int) curl_getinfo($ch, CURLINFO_RESPONSE_CODE);
+    curl_close($ch);
+
+    return [$statusCode, $responseBody];
+}
+
+function ensureWebdavDirectories(string $baseUrl, array $segments, string $username, string $password): void
+{
+    if (!$segments) {
+        return;
+    }
+
+    $base = rtrim($baseUrl, '/');
+    $current = [];
+    foreach ($segments as $segment) {
+        $current[] = $segment;
+        $encodedPath = implode('/', array_map('rawurlencode', $current));
+        $url = $base . '/' . $encodedPath;
+        try {
+            [$status] = webdavRequest('MKCOL', $url, $username, $password);
+        } catch (RuntimeException $exception) {
+            throw new RuntimeException('Ordner konnte nicht erstellt werden: ' . $exception->getMessage());
+        }
+
+        if ($status >= 400 && !in_array($status, [405, 301, 302], true)) {
+            throw new RuntimeException('Ordner konnte nicht erstellt werden (HTTP ' . $status . ').');
+        }
+    }
+}
+
+function uploadInvoicePdfToStorageBox(array $invoice, string $filename, string $binary): void
+{
+    try {
+        $config = getInvoiceStorageConfig(true);
+    } catch (Throwable $exception) {
+        error_log('Storage-Box-Konfiguration konnte nicht gelesen werden: ' . $exception->getMessage());
+        return;
+    }
+
+    if (empty($config['enabled'])) {
+        return;
+    }
+
+    $baseUrl = isset($config['base_url']) ? trim((string) $config['base_url']) : '';
+    $username = isset($config['username']) ? trim((string) $config['username']) : '';
+    $password = isset($config['password']) ? (string) $config['password'] : '';
+    if ($baseUrl === '' || $username === '' || $password === '') {
+        return;
+    }
+
+    $directorySegments = invoiceStorageDirectorySegments($config['directory'] ?? '');
+    $targetBase = rtrim($baseUrl, '/');
+
+    try {
+        if ($directorySegments) {
+            ensureWebdavDirectories($targetBase, $directorySegments, $username, $password);
+            $targetBase .= '/' . implode('/', array_map('rawurlencode', $directorySegments));
+        }
+
+        $targetUrl = $targetBase . '/' . rawurlencode($filename);
+        [$status] = webdavRequest('PUT', $targetUrl, $username, $password, $binary, ['Content-Type: application/pdf']);
+        if ($status >= 400) {
+            throw new RuntimeException('Upload fehlgeschlagen (HTTP ' . $status . ').');
+        }
+    } catch (Throwable $exception) {
+        $reference = $invoice['invoice_number'] ?? ($invoice['id'] ?? '');
+        $refLabel = $reference !== '' ? ' ' . $reference : '';
+        error_log('Rechnung' . $refLabel . ' konnte nicht in die Storage Box hochgeladen werden: ' . $exception->getMessage());
+    }
 }

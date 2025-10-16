@@ -10,6 +10,14 @@ const CALENDAR_COLOR_DEFAULTS = {
     no_show: '#7c3aed',
 };
 
+const DEFAULT_INVOICE_STORAGE_SETTINGS = Object.freeze({
+    enabled: false,
+    base_url: '',
+    directory: '',
+    username: '',
+    password_set: false,
+});
+
 const ARTICLE_SCHEME_LABELS = {
     per_person_per_day: 'pro Person & Tag',
     per_room_per_day: 'pro Zimmer & Tag',
@@ -48,8 +56,7 @@ const state = {
     calendarColorsLoaded: false,
     invoiceLogoDataUrl: null,
     currentReservationInvoices: [],
-    guestLookupResults: [],
-    guestLookupTerm: '',
+    invoiceStorageSettings: { ...DEFAULT_INVOICE_STORAGE_SETTINGS },
 };
 
 const CALENDAR_DAYS = 14;
@@ -119,6 +126,10 @@ const invoiceLogoForm = document.getElementById('invoice-logo-form');
 const invoiceLogoInput = invoiceLogoForm ? invoiceLogoForm.querySelector('input[type="file"]') : null;
 const invoiceLogoPreview = document.getElementById('invoice-logo-preview');
 const removeInvoiceLogoButton = document.getElementById('remove-invoice-logo');
+const invoiceStorageForm = document.getElementById('invoice-storage-form');
+const invoiceStoragePasswordNote = document.getElementById('invoice-storage-password-note');
+const invoiceStorageStatus = document.getElementById('invoice-storage-status');
+const invoiceStorageClearButton = document.getElementById('invoice-storage-clear');
 
 let guestLookupDebounceId = null;
 let guestLookupRequestId = 0;
@@ -599,6 +610,62 @@ function updateInvoiceLogoPreview(dataUrl) {
         if (removeInvoiceLogoButton) {
             removeInvoiceLogoButton.classList.add('hidden');
         }
+    }
+}
+
+function normalizeInvoiceStorageSettings(data) {
+    const defaults = { ...DEFAULT_INVOICE_STORAGE_SETTINGS };
+    if (!data || typeof data !== 'object') {
+        return defaults;
+    }
+
+    return {
+        enabled: Boolean(data.enabled),
+        base_url: data.base_url ? String(data.base_url) : '',
+        directory: data.directory ? String(data.directory) : '',
+        username: data.username ? String(data.username) : '',
+        password_set: Boolean(data.password_set),
+    };
+}
+
+function formatInvoiceStorageTarget(settings) {
+    const base = (settings.base_url || '').trim().replace(/\s+/g, '').replace(/\/+$/, '');
+    const directory = (settings.directory || '').trim().replace(/^\/+/, '');
+    if (!base && !directory) {
+        return '';
+    }
+    if (!directory) {
+        return base;
+    }
+    return `${base}/${directory}`;
+}
+
+function updateInvoiceStorageForm(settings = state.invoiceStorageSettings) {
+    if (!invoiceStorageForm) {
+        return;
+    }
+    const current = settings ? { ...DEFAULT_INVOICE_STORAGE_SETTINGS, ...settings } : { ...DEFAULT_INVOICE_STORAGE_SETTINGS };
+    const passwordInput = invoiceStorageForm.querySelector('input[name="password"]');
+    invoiceStorageForm.enabled.checked = Boolean(current.enabled);
+    invoiceStorageForm.base_url.value = current.base_url || '';
+    invoiceStorageForm.directory.value = current.directory || '';
+    invoiceStorageForm.username.value = current.username || '';
+    if (passwordInput) {
+        passwordInput.value = '';
+        passwordInput.placeholder = current.password_set
+            ? 'Nur ausfüllen, um das Passwort zu ändern'
+            : 'Bitte Passwort eingeben';
+    }
+    if (invoiceStoragePasswordNote) {
+        invoiceStoragePasswordNote.textContent = current.password_set
+            ? 'Lassen Sie das Passwortfeld leer, um das gespeicherte Passwort zu behalten.'
+            : 'Geben Sie Ihr Storage-Box-Passwort ein. Es wird sicher gespeichert.';
+    }
+    if (invoiceStorageStatus) {
+        const target = formatInvoiceStorageTarget(current);
+        invoiceStorageStatus.textContent = current.enabled
+            ? (target ? `Uploads aktiv. Ziel: ${target}` : 'Uploads aktiv.')
+            : 'Uploads deaktiviert.';
     }
 }
 
@@ -1794,16 +1861,21 @@ async function loadSettings(force = false) {
     if (!force && state.loadedSections.has('settings')) {
         populateCalendarColorInputs();
         updateInvoiceLogoPreview(state.invoiceLogoDataUrl);
+        updateInvoiceStorageForm(state.invoiceStorageSettings);
         return;
     }
     try {
-        const [, logoResponse] = await Promise.all([
+        const [, logoResponse, storageResponse] = await Promise.all([
             loadCalendarColors(true),
             apiFetch('settings/invoice-logo'),
+            apiFetch('settings/invoice-storage'),
         ]);
         populateCalendarColorInputs();
         const logoData = logoResponse && typeof logoResponse === 'object' ? logoResponse.logo || null : null;
         updateInvoiceLogoPreview(logoData);
+        const storageSettings = normalizeInvoiceStorageSettings(storageResponse);
+        state.invoiceStorageSettings = storageSettings;
+        updateInvoiceStorageForm(storageSettings);
         state.loadedSections.add('settings');
     } catch (error) {
         showMessage(error.message, 'error');
@@ -2575,6 +2647,55 @@ if (removeInvoiceLogoButton) {
                 invoiceLogoInput.value = '';
             }
             showMessage('Rechnungslogo entfernt.', 'success');
+        } catch (error) {
+            showMessage(error.message, 'error');
+        }
+    });
+}
+
+if (invoiceStorageForm) {
+    invoiceStorageForm.addEventListener('submit', async (event) => {
+        event.preventDefault();
+        if (!requireToken()) {
+            return;
+        }
+        const payload = {
+            enabled: invoiceStorageForm.enabled.checked,
+            base_url: invoiceStorageForm.base_url.value.trim(),
+            directory: invoiceStorageForm.directory.value.trim(),
+            username: invoiceStorageForm.username.value.trim(),
+        };
+        const passwordField = invoiceStorageForm.querySelector('input[name="password"]');
+        if (passwordField && passwordField.value) {
+            payload.password = passwordField.value;
+        }
+        try {
+            const response = await apiFetch('settings/invoice-storage', {
+                method: 'PUT',
+                body: JSON.stringify(payload),
+            });
+            const settings = normalizeInvoiceStorageSettings(response);
+            state.invoiceStorageSettings = settings;
+            updateInvoiceStorageForm(settings);
+            showMessage('Storage-Box-Einstellungen gespeichert.', 'success');
+        } catch (error) {
+            showMessage(error.message, 'error');
+        }
+    });
+}
+
+if (invoiceStorageClearButton) {
+    invoiceStorageClearButton.addEventListener('click', async (event) => {
+        event.preventDefault();
+        if (!requireToken()) {
+            return;
+        }
+        try {
+            const response = await apiFetch('settings/invoice-storage', { method: 'DELETE' });
+            const settings = normalizeInvoiceStorageSettings(response);
+            state.invoiceStorageSettings = settings;
+            updateInvoiceStorageForm(settings);
+            showMessage('Storage-Box-Zugangsdaten entfernt.', 'success');
         } catch (error) {
             showMessage(error.message, 'error');
         }
