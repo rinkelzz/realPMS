@@ -154,6 +154,11 @@
                     <label>Quelle
                         <input type="text" name="booked_via" placeholder="z.B. Website, Booking.com">
                     </label>
+                    <div>
+                        <label class="inline-label">Zusatzleistungen</label>
+                        <p class="muted small-text">Wählen Sie optionale Artikel, die automatisch in die Rechnung übernommen werden.</p>
+                        <div id="reservation-article-options" class="article-grid"></div>
+                    </div>
                 </fieldset>
                 <div class="form-actions">
                     <button type="submit">Reservierung speichern</button>
@@ -293,6 +298,45 @@
                     <div id="invoice-items" class="invoice-items"></div>
                     <button type="button" id="add-invoice-item" class="secondary">Position hinzufügen</button>
                     <button type="submit">Rechnung erstellen</button>
+                </form>
+            </div>
+            <div class="panel">
+                <div class="panel-header">
+                    <h3>Artikel &amp; Zusatzleistungen</h3>
+                    <button type="button" id="reload-articles" class="secondary">Neu laden</button>
+                </div>
+                <div id="articles-list" class="table-wrapper"></div>
+                <form id="article-form" class="grid-form">
+                    <h4>Neuer Artikel</h4>
+                    <label>Name
+                        <input type="text" name="name" required>
+                    </label>
+                    <label>Beschreibung
+                        <textarea name="description" rows="2"></textarea>
+                    </label>
+                    <label>Abrechnungsart
+                        <select name="charge_scheme">
+                            <option value="per_person_per_day">pro Person &amp; Tag</option>
+                            <option value="per_room_per_day">pro Zimmer &amp; Tag</option>
+                            <option value="per_stay">pro Aufenthalt</option>
+                            <option value="per_person">pro Person</option>
+                            <option value="per_day">pro Tag</option>
+                        </select>
+                    </label>
+                    <label>Einzelpreis (netto)
+                        <input type="number" name="unit_price" min="0" step="0.01" value="0.00">
+                    </label>
+                    <label>Mehrwertsteuer %
+                        <input type="number" name="tax_rate" min="0" step="0.1" value="19.0">
+                    </label>
+                    <label class="checkbox-inline">
+                        <input type="checkbox" name="is_active" checked>
+                        Aktiv
+                    </label>
+                    <div class="form-actions">
+                        <button type="submit">Artikel speichern</button>
+                        <button type="button" id="article-cancel-edit" class="secondary hidden">Abbrechen</button>
+                    </div>
                 </form>
             </div>
             <div class="panel">
@@ -541,6 +585,22 @@
                 <div class="form-actions">
                     <button type="submit">Speichern</button>
                     <button type="button" id="reset-calendar-colors" class="secondary">Zurücksetzen</button>
+                </div>
+            </form>
+        </div>
+        <div class="panel">
+            <h3>Rechnungslogo</h3>
+            <p class="muted">Laden Sie ein PNG- oder JPEG-Logo hoch. Es erscheint automatisch auf PDF-Rechnungen.</p>
+            <form id="invoice-logo-form" class="stacked-form" enctype="multipart/form-data">
+                <label>Logo auswählen
+                    <input type="file" accept="image/png,image/jpeg">
+                </label>
+                <div id="invoice-logo-preview" class="logo-preview">
+                    <p class="muted">Noch kein Logo hochgeladen.</p>
+                </div>
+                <div class="form-actions">
+                    <button type="submit">Logo speichern</button>
+                    <button type="button" id="remove-invoice-logo" class="secondary hidden">Logo entfernen</button>
                 </div>
             </form>
         </div>

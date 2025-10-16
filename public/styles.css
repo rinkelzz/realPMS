@@ -490,6 +490,113 @@ button.status-action:disabled:hover {
     font-size: .95rem;
 }
 
+.grid-form h4 {
+    grid-column: 1 / -1;
+    margin: 0;
+}
+
+.inline-label {
+    display: block;
+    font-weight: 600;
+    margin-bottom: .35rem;
+}
+
+.small-text {
+    font-size: .85rem;
+    color: var(--muted);
+}
+
+.checkbox-inline {
+    display: flex;
+    align-items: center;
+    gap: .5rem;
+    font-weight: 600;
+}
+
+.article-grid {
+    display: flex;
+    flex-direction: column;
+    gap: .75rem;
+    margin-top: .5rem;
+}
+
+.article-option {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 1rem;
+    padding: .9rem 1rem;
+    border: 1px solid var(--border);
+    border-radius: .75rem;
+    background: var(--surface-alt);
+}
+
+.article-option label {
+    display: flex;
+    align-items: flex-start;
+    gap: .75rem;
+    flex: 1;
+    margin: 0;
+}
+
+.article-option span {
+    display: flex;
+    flex-direction: column;
+    gap: .25rem;
+}
+
+.article-option small {
+    color: var(--muted);
+}
+
+.article-option em {
+    font-style: normal;
+    color: var(--muted);
+    font-size: .85rem;
+}
+
+.article-option input[type="checkbox"] {
+    margin-top: .25rem;
+}
+
+.article-option .article-multiplier {
+    width: 5.5rem;
+    text-align: right;
+}
+
+.text-link {
+    background: none;
+    border: none;
+    color: var(--primary);
+    padding: 0;
+    font: inherit;
+    cursor: pointer;
+    text-decoration: underline;
+}
+
+.text-link:hover {
+    color: var(--primary-dark);
+}
+
+.logo-preview {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 160px;
+    border: 2px dashed var(--border);
+    border-radius: .75rem;
+    background: var(--surface-alt);
+    padding: 1rem;
+    text-align: center;
+}
+
+.logo-image {
+    max-width: 320px;
+    width: 100%;
+    height: auto;
+    object-fit: contain;
+}
+
 input, select, textarea {
     border: 1px solid var(--border);
     border-radius: .5rem;

@@ -20,6 +20,9 @@ Ein wunderschönes PMS – jetzt mit ersten Setup-Skripten.
    ```
    oder rufe `install.php` im Browser auf. Die Skriptausgabe bestätigt die Erstellung aller Tabellen.
 
+> **Hinweis:** Stelle sicher, dass der Webserver Schreibrechte auf `backend/storage` besitzt – hier landen u. a. das Rechnungslogo
+und temporäre PDF-Dateien.
+
 ## Repository-Update über das Backend
 
 Für ein automatisiertes Update des aktuell ausgecheckten Branches steht `backend/update.php` bereit.
@@ -59,6 +62,9 @@ Neben der reinen API steht jetzt ein leichtgewichtiger Administrations-Client zu
 - Die Dashboard-Kalenderansicht sortiert Zimmer nach Kategorie, markiert Angereist/Bezahlt/Abgereist farblich und lässt sich per Umschalter zwischen Gast- und Firmenname umstellen; ein Klick auf eine belegte Zelle springt direkt zur entsprechenden Reservierung.
 - Über den Button „Farben anpassen“ im Dashboard gelangst du direkt zu den Kalender-Einstellungen und kannst alle Status-Farben dauerhaft speichern oder zurücksetzen.
 - Die Reservierungsliste bietet farbige Schnellaktionen für Check-in, Zahlungseingang, Check-out und No-Show – ideal, um Gäste schnell als angereist, abgereist oder No-Show zu markieren.
+- Im Reservierungsformular kannst du aktive Artikel/Zusatzleistungen auswählen; Mengen werden automatisch mit der Zimmerkapazität abgeglichen.
+- Der Fakturierungsbereich enthält ein Artikel-Panel samt CRUD-Funktionalität, eine Rechnungsmaske mit MwSt.-Berechnung sowie Direktlinks zum PDF-Export.
+- Unter „Einstellungen“ lässt sich das Rechnungslogo als PNG/JPEG hochladen; die Vorschau zeigt unmittelbar das spätere Layout auf der Rechnung.
 
 ## REST API für den MVP-Funktionsumfang
 
@@ -76,7 +82,8 @@ Nach dem erfolgreichen Datenbank-Setup stellt `backend/api/index.php` eine schla
     "rate_plan_id": 2,
     "status": "confirmed",
     "total_amount": 480,
-    "notes": "Late arrival"
+    "notes": "Late arrival",
+    "articles": [{"article_id": 3, "multiplier": 4}]
   }
   ```
 - `POST /backend/api/reservations/{id}/status` – Aktualisiert den Reservierungsstatus (`checked_in`, `paid`, `checked_out`, `no_show` usw.) inklusive Logbuch, Zimmer- und Housekeeping-Updates. Aus Kompatibilitätsgründen funktionieren weiterhin die Kurzpfade `/check-in`, `/check-out`, `/pay` und `/no-show`.
@@ -92,6 +99,8 @@ Nach dem erfolgreichen Datenbank-Setup stellt `backend/api/index.php` eine schla
 ### Fakturierung & Zahlungen
 - `POST /backend/api/invoices` – Erstellt Rechnungen mit beliebig vielen Positionen; Netto-/Steuer-/Brutto-Summen werden automatisch berechnet.
 - `POST /backend/api/payments` – Verbucht Zahlungen (Bar, Karte, externes Gateway) und verknüpft sie mit Rechnungen.
+- `GET /backend/api/invoices/{id}/pdf` – Rendert die Rechnung als PDF (inkl. Rechnungslogo, Netto-/MwSt.-Ausweis und Artikellisten) über die mitgelieferte FPDF-Library.
+- `GET|POST|PATCH|DELETE /backend/api/articles` – Verwalte abrechenbare Artikel (z. B. Frühstück, Parkplatz). Die Felder `charge_scheme`, `unit_price` und `tax_rate` sorgen dafür, dass Mehrwertsteuer nach deutschem Recht (Standard 19 %, optional z. B. 7 %) korrekt in Rechnungen einfließt.
 
 ### Berichte & Analytics
 - `GET /backend/api/reports/occupancy?start=2024-02-01&end=2024-02-07` – Tagesbasierte Auslastungsquote.
@@ -108,6 +117,7 @@ Nach dem erfolgreichen Datenbank-Setup stellt `backend/api/index.php` eine schla
 ### Einstellungen
 - `GET /backend/api/settings` – Liefert die verfügbaren Einstellungsbereiche.
 - `GET|PUT|DELETE /backend/api/settings/calendar-colors` – Liest, speichert oder setzt die Kalenderfarben zurück. `PUT` erwartet ein Objekt nach dem Schema `{ "colors": { "confirmed": "#2563eb", "checked_in": "#16a34a", ... } }`.
+- `GET|PUT|DELETE /backend/api/settings/invoice-logo` – Lädt das Rechnungslogo als Base64-Daten, speichert neue Uploads oder entfernt vorhandene Logos.
 
 ### Gästeportal / Self-Service
 - `GET /backend/api/guest-portal/reservations/{confirmation}` – Gäste sehen Reservierungsdetails, Zimmer und Dokumente.

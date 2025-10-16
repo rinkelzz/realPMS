@@ -10,6 +10,14 @@ const CALENDAR_COLOR_DEFAULTS = {
     no_show: '#7c3aed',
 };
 
+const ARTICLE_SCHEME_LABELS = {
+    per_person_per_day: 'pro Person & Tag',
+    per_room_per_day: 'pro Zimmer & Tag',
+    per_stay: 'pro Aufenthalt',
+    per_person: 'pro Person',
+    per_day: 'pro Tag',
+};
+
 const RESERVATION_STATUS_ACTIONS = [
     { status: 'checked_in', label: 'Check-in', title: 'Gast als angereist markieren' },
     { status: 'paid', label: 'Bezahlt', title: 'Zahlung als erhalten markieren' },
@@ -27,14 +35,18 @@ const state = {
     guests: [],
     companies: [],
     companiesLoaded: false,
+    articles: [],
+    articlesLoaded: false,
     editingReservationId: null,
     editingGuestId: null,
     editingCompanyId: null,
+    editingArticleId: null,
     loadedSections: new Set(),
     calendarLabelMode: 'guest',
     calendarColors: { ...CALENDAR_COLOR_DEFAULTS },
     calendarColorTokens: {},
     calendarColorsLoaded: false,
+    invoiceLogoDataUrl: null,
 };
 
 const CALENDAR_DAYS = 14;
@@ -66,6 +78,7 @@ const reservationCapacityEl = document.getElementById('reservation-capacity');
 const reservationRoomsSelect = reservationForm ? reservationForm.querySelector('select[name="rooms"]') : null;
 const guestSelect = reservationForm ? reservationForm.querySelector('select[name="guest_id"]') : null;
 const reservationGuestCompanySelect = reservationForm ? reservationForm.querySelector('select[name="guest_company"]') : null;
+const reservationArticleContainer = document.getElementById('reservation-article-options');
 const guestForm = document.getElementById('guest-form');
 const guestDetails = guestForm ? guestForm.closest('details') : null;
 const guestSummary = guestDetails ? guestDetails.querySelector('summary') : null;
@@ -85,6 +98,15 @@ const calendarColorForm = document.getElementById('calendar-color-form');
 const resetCalendarColorsButton = document.getElementById('reset-calendar-colors');
 const settingsReloadButton = document.getElementById('reload-settings');
 const occupancyCalendarContainer = document.getElementById('occupancy-calendar');
+const articlesList = document.getElementById('articles-list');
+const articleForm = document.getElementById('article-form');
+const articleSummary = articleForm ? articleForm.querySelector('h4') : null;
+const articleCancelButton = document.getElementById('article-cancel-edit');
+const reloadArticlesButton = document.getElementById('reload-articles');
+const invoiceLogoForm = document.getElementById('invoice-logo-form');
+const invoiceLogoInput = invoiceLogoForm ? invoiceLogoForm.querySelector('input[type="file"]') : null;
+const invoiceLogoPreview = document.getElementById('invoice-logo-preview');
+const removeInvoiceLogoButton = document.getElementById('remove-invoice-logo');
 
 const RESERVATION_STATUS_LABELS = {
     tentative: 'Voranfrage',
@@ -363,6 +385,61 @@ function formatCurrency(amount, currency = 'EUR') {
     return new Intl.NumberFormat('de-DE', { style: 'currency', currency }).format(number);
 }
 
+function escapeHtml(value) {
+    return String(value)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#039;');
+}
+
+function formatChargeScheme(scheme) {
+    return ARTICLE_SCHEME_LABELS[scheme] || scheme;
+}
+
+function formatArticleHint(article) {
+    const scheme = formatChargeScheme(article.charge_scheme);
+    const price = formatCurrency(article.unit_price ?? 0, article.currency || 'EUR');
+    const tax = Number(article.tax_rate ?? 0).toFixed(1);
+    return `${scheme} · ${price} · MwSt ${tax}%`;
+}
+
+function buildInvoicePdfUrl(invoiceId) {
+    if (!invoiceId) {
+        return '#';
+    }
+    const tokenParam = state.token ? `?token=${encodeURIComponent(state.token)}` : '';
+    return `${API_BASE}/invoices/${invoiceId}/pdf${tokenParam}`;
+}
+
+function readFileAsDataUrl(file) {
+    return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result);
+        reader.onerror = () => reject(reader.error || new Error('Datei konnte nicht gelesen werden.'));
+        reader.readAsDataURL(file);
+    });
+}
+
+function updateInvoiceLogoPreview(dataUrl) {
+    if (!invoiceLogoPreview) {
+        return;
+    }
+    state.invoiceLogoDataUrl = dataUrl || null;
+    if (dataUrl) {
+        invoiceLogoPreview.innerHTML = `<img src="${dataUrl}" alt="Rechnungslogo" class="logo-image">`;
+        if (removeInvoiceLogoButton) {
+            removeInvoiceLogoButton.classList.remove('hidden');
+        }
+    } else {
+        invoiceLogoPreview.innerHTML = '<p class="muted">Noch kein Logo hochgeladen.</p>';
+        if (removeInvoiceLogoButton) {
+            removeInvoiceLogoButton.classList.add('hidden');
+        }
+    }
+}
+
 function normalizeHexColorInput(value) {
     if (!value) {
         return null;
@@ -580,6 +657,123 @@ function populateCompanyDropdowns() {
     }
 }
 
+function renderReservationArticleOptions(selectedArticles = []) {
+    if (!reservationArticleContainer) {
+        return;
+    }
+    const activeArticles = state.articles.filter((article) => Number(article.is_active ?? 1) === 1);
+    if (activeArticles.length === 0) {
+        reservationArticleContainer.innerHTML = '<p class="muted">Keine Zusatzleistungen hinterlegt.</p>';
+        return;
+    }
+
+    const selectedMap = new Map();
+    selectedArticles.forEach((entry) => {
+        const articleId = Number(entry.article_id ?? entry.id);
+        if (!Number.isNaN(articleId)) {
+            const multiplier = Number(entry.multiplier ?? entry.quantity ?? 1);
+            selectedMap.set(articleId, Number.isFinite(multiplier) ? multiplier : 1);
+        }
+    });
+
+    const markup = activeArticles.map((article) => {
+        const id = Number(article.id);
+        const isSelected = selectedMap.has(id);
+        const multiplierValue = selectedMap.get(id) ?? 1;
+        const hint = formatArticleHint(article);
+        const description = article.description ? `<small>${escapeHtml(article.description)}</small>` : '';
+        return `
+            <div class="article-option" data-article-id="${id}">
+                <label>
+                    <input type="checkbox" value="${id}" ${isSelected ? 'checked' : ''}>
+                    <span>
+                        <strong>${escapeHtml(article.name || '')}</strong>
+                        ${description}
+                        <em>${escapeHtml(hint)}</em>
+                    </span>
+                </label>
+                <input type="number" class="article-multiplier" min="0" step="0.1" value="${Number(multiplierValue).toString()}" ${isSelected ? '' : 'disabled'}>
+            </div>
+        `;
+    }).join('');
+
+    reservationArticleContainer.innerHTML = markup;
+}
+
+function renderArticlesTable() {
+    if (!articlesList) {
+        return;
+    }
+    const columns = [
+        { key: 'name', label: 'Name', render: (row) => escapeHtml(row.name || '') },
+        { key: 'charge_scheme', label: 'Abrechnung', render: (row) => escapeHtml(formatChargeScheme(row.charge_scheme)) },
+        { key: 'unit_price', label: 'Preis', render: (row) => escapeHtml(formatCurrency(row.unit_price ?? 0, row.currency || 'EUR')) },
+        { key: 'tax_rate', label: 'MwSt', render: (row) => `${Number(row.tax_rate ?? 0).toFixed(1)} %` },
+        { key: 'is_active', label: 'Status', render: (row) => (Number(row.is_active ?? 1) ? 'Aktiv' : 'Inaktiv') },
+        {
+            key: 'actions',
+            label: 'Aktionen',
+            render: (row) => {
+                const id = escapeHtml(String(row.id));
+                const actions = [`<button type="button" class="text-link" data-action="edit-article" data-id="${id}">Bearbeiten</button>`];
+                if (Number(row.is_active ?? 1)) {
+                    actions.push(`<button type="button" class="text-link" data-action="deactivate-article" data-id="${id}">Deaktivieren</button>`);
+                } else {
+                    actions.push(`<button type="button" class="text-link" data-action="activate-article" data-id="${id}">Aktivieren</button>`);
+                }
+                return actions.join(' ');
+            },
+        },
+    ];
+    renderTable('articles-list', columns, state.articles, 'Noch keine Artikel erfasst.');
+}
+
+function resetArticleForm() {
+    if (!articleForm) {
+        return;
+    }
+    articleForm.reset();
+    state.editingArticleId = null;
+    if (articleSummary) {
+        articleSummary.textContent = 'Neuer Artikel';
+    }
+    if (articleCancelButton) {
+        articleCancelButton.classList.add('hidden');
+    }
+}
+
+function startArticleEdit(articleId) {
+    if (!articleForm) {
+        return;
+    }
+    const article = state.articles.find((entry) => Number(entry.id) === Number(articleId));
+    if (!article) {
+        showMessage('Artikel wurde nicht gefunden.', 'error');
+        return;
+    }
+    state.editingArticleId = Number(articleId);
+    articleForm.name.value = article.name || '';
+    articleForm.description.value = article.description || '';
+    if (articleForm.charge_scheme) {
+        articleForm.charge_scheme.value = article.charge_scheme || 'per_person_per_day';
+    }
+    articleForm.unit_price.value = Number(article.unit_price ?? 0).toFixed(2);
+    articleForm.tax_rate.value = Number(article.tax_rate ?? 0).toFixed(1);
+    if (articleForm.is_active) {
+        articleForm.is_active.checked = Number(article.is_active ?? 1) === 1;
+    }
+    if (articleSummary) {
+        articleSummary.textContent = `Artikel bearbeiten (${article.name || ''})`;
+    }
+    if (articleCancelButton) {
+        articleCancelButton.classList.remove('hidden');
+    }
+    const section = articleForm.closest('.panel');
+    if (section && typeof section.scrollIntoView === 'function') {
+        section.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+}
+
 function populateGuestSelect() {
     if (!guestSelect) {
         return;
@@ -638,6 +832,7 @@ function resetReservationForm() {
     populateRoomOptions();
     populateGuestSelect();
     populateCompanyDropdowns();
+    renderReservationArticleOptions();
     applyGuestToForm(null);
     if (reservationDetails) {
         reservationDetails.open = wasOpen;
@@ -694,6 +889,7 @@ function fillReservationForm(reservation) {
     }
 
     applyGuestToForm(guestSnapshot);
+    renderReservationArticleOptions(reservation.articles || []);
     updateReservationCapacityHint();
 }
 
@@ -1092,13 +1288,15 @@ async function bootstrap() {
         return;
     }
     try {
-        const [roomTypes, ratePlans, rooms, roles, guests, companies] = await Promise.all([
+        const [roomTypes, ratePlans, rooms, roles, guests, companies, articles, logoResponse] = await Promise.all([
             apiFetch('room-types'),
             apiFetch('rate-plans'),
             apiFetch('rooms'),
             apiFetch('roles'),
             apiFetch('guests'),
             apiFetch('companies'),
+            apiFetch('articles?include_inactive=1'),
+            apiFetch('settings/invoice-logo'),
         ]);
         state.roomTypes = roomTypes;
         state.ratePlans = ratePlans;
@@ -1107,6 +1305,10 @@ async function bootstrap() {
         state.guests = guests;
         state.companies = companies;
         state.companiesLoaded = true;
+        state.articles = Array.isArray(articles) ? articles : [];
+        state.articlesLoaded = true;
+        const logoData = logoResponse && typeof logoResponse === 'object' ? logoResponse.logo || null : null;
+        updateInvoiceLogoPreview(logoData);
         await loadCalendarColors(true);
         populateRoomTypeSelects();
         populateRatePlanSelect();
@@ -1116,6 +1318,7 @@ async function bootstrap() {
         populateRatePlanList();
         populateGuestSelect();
         populateCompanyDropdowns();
+        renderArticlesTable();
         renderGuestsTable(guests);
         renderCompaniesTable(companies);
         resetReservationForm();
@@ -1317,12 +1520,38 @@ async function loadSettings(force = false) {
     }
     if (!force && state.loadedSections.has('settings')) {
         populateCalendarColorInputs();
+        updateInvoiceLogoPreview(state.invoiceLogoDataUrl);
         return;
     }
     try {
-        await loadCalendarColors(true);
+        const [, logoResponse] = await Promise.all([
+            loadCalendarColors(true),
+            apiFetch('settings/invoice-logo'),
+        ]);
         populateCalendarColorInputs();
+        const logoData = logoResponse && typeof logoResponse === 'object' ? logoResponse.logo || null : null;
+        updateInvoiceLogoPreview(logoData);
         state.loadedSections.add('settings');
+    } catch (error) {
+        showMessage(error.message, 'error');
+    }
+}
+
+async function loadArticles(force = false) {
+    if (!requireToken()) {
+        return;
+    }
+    if (!force && state.articlesLoaded) {
+        renderArticlesTable();
+        renderReservationArticleOptions();
+        return;
+    }
+    try {
+        const articles = await apiFetch('articles?include_inactive=1');
+        state.articles = Array.isArray(articles) ? articles : [];
+        state.articlesLoaded = true;
+        renderArticlesTable();
+        renderReservationArticleOptions();
     } catch (error) {
         showMessage(error.message, 'error');
     }
@@ -1386,6 +1615,7 @@ async function loadBilling(force = false) {
             apiFetch('invoices'),
             apiFetch('payments'),
         ]);
+        await loadArticles(force);
         renderTable('invoices-list', [
             { key: 'invoice_number', label: 'Rechnungsnr.' },
             { key: 'reservation_id', label: 'Reservierung' },
@@ -1393,6 +1623,11 @@ async function loadBilling(force = false) {
             { key: 'due_date', label: 'Fällig am', render: (row) => formatDate(row.due_date) },
             { key: 'status', label: 'Status' },
             { key: 'total_amount', label: 'Summe', render: (row) => formatCurrency(row.total_amount) },
+            {
+                key: 'actions',
+                label: 'Aktionen',
+                render: (row) => `<a href="${buildInvoicePdfUrl(row.id)}" target="_blank" rel="noopener">PDF</a>`,
+            },
         ], invoices);
         renderTable('payments-list', [
             { key: 'invoice_number', label: 'Rechnungsnr.' },
@@ -1660,6 +1895,28 @@ if (reservationForm) {
             booked_via: reservationForm.booked_via.value || null,
         };
 
+        if (reservationArticleContainer) {
+            const selections = Array.from(reservationArticleContainer.querySelectorAll('.article-option')).map((option) => {
+                const checkbox = option.querySelector('input[type="checkbox"]');
+                if (!checkbox || !checkbox.checked) {
+                    return null;
+                }
+                const articleId = Number(checkbox.value);
+                if (Number.isNaN(articleId)) {
+                    return null;
+                }
+                const multiplierInput = option.querySelector('.article-multiplier');
+                const multiplierValue = multiplierInput ? Number(multiplierInput.value || 1) : 1;
+                return {
+                    article_id: articleId,
+                    multiplier: Number.isFinite(multiplierValue) ? multiplierValue : 1,
+                };
+            }).filter(Boolean);
+            if (selections.length > 0 || isEdit) {
+                payload.articles = selections;
+            }
+        }
+
         const selectedGuestId = guestSelect && guestSelect.value ? Number(guestSelect.value) : null;
         const guestPayload = {
             first_name: reservationForm.guest_first.value,
@@ -1710,6 +1967,28 @@ if (reservationCancelButton) {
 
 if (reservationRoomsSelect) {
     reservationRoomsSelect.addEventListener('change', updateReservationCapacityHint);
+}
+
+if (reservationArticleContainer) {
+    reservationArticleContainer.addEventListener('change', (event) => {
+        const target = event.target;
+        if (!(target instanceof HTMLInputElement)) {
+            return;
+        }
+        if (target.type === 'checkbox') {
+            const option = target.closest('.article-option');
+            if (!option) {
+                return;
+            }
+            const multiplierInput = option.querySelector('.article-multiplier');
+            if (multiplierInput instanceof HTMLInputElement) {
+                multiplierInput.disabled = !target.checked;
+                if (target.checked && (!multiplierInput.value || Number(multiplierInput.value) < 0)) {
+                    multiplierInput.value = '1';
+                }
+            }
+        }
+    });
 }
 
 if (reservationForm) {
@@ -1824,6 +2103,156 @@ document.getElementById('rate-plan-form').addEventListener('submit', async (even
         showMessage(error.message, 'error');
     }
 });
+
+if (articleForm) {
+    articleForm.addEventListener('submit', async (event) => {
+        event.preventDefault();
+        if (!requireToken()) {
+            return;
+        }
+        const form = event.target;
+        const payload = {
+            name: form.name.value,
+            description: form.description.value || null,
+            charge_scheme: form.charge_scheme.value,
+            unit_price: form.unit_price.value ? Number(form.unit_price.value) : 0,
+            tax_rate: form.tax_rate.value ? Number(form.tax_rate.value) : 0,
+            is_active: form.is_active ? form.is_active.checked : true,
+        };
+        const isEdit = Boolean(state.editingArticleId);
+        const endpoint = isEdit ? `articles/${state.editingArticleId}` : 'articles';
+        const method = isEdit ? 'PATCH' : 'POST';
+        try {
+            await apiFetch(endpoint, {
+                method,
+                body: JSON.stringify(payload),
+            });
+            showMessage(isEdit ? 'Artikel aktualisiert.' : 'Artikel angelegt.', 'success');
+            resetArticleForm();
+            await loadArticles(true);
+        } catch (error) {
+            showMessage(error.message, 'error');
+        }
+    });
+}
+
+if (articleCancelButton) {
+    articleCancelButton.addEventListener('click', () => {
+        resetArticleForm();
+    });
+}
+
+if (reloadArticlesButton) {
+    reloadArticlesButton.addEventListener('click', () => loadArticles(true));
+}
+
+if (articlesList) {
+    articlesList.addEventListener('click', async (event) => {
+        const target = event.target;
+        if (!(target instanceof HTMLElement)) {
+            return;
+        }
+        const action = target.dataset.action;
+        const id = Number(target.dataset.id);
+        if (!action || Number.isNaN(id)) {
+            return;
+        }
+        if (action === 'edit-article') {
+            startArticleEdit(id);
+            return;
+        }
+        if (!requireToken()) {
+            return;
+        }
+        try {
+            if (action === 'deactivate-article') {
+                await apiFetch(`articles/${id}`, { method: 'DELETE' });
+                showMessage('Artikel deaktiviert.', 'success');
+            } else if (action === 'activate-article') {
+                await apiFetch(`articles/${id}`, {
+                    method: 'PATCH',
+                    body: JSON.stringify({ is_active: true }),
+                });
+                showMessage('Artikel aktiviert.', 'success');
+            }
+            await loadArticles(true);
+        } catch (error) {
+            showMessage(error.message, 'error');
+        }
+    });
+}
+
+if (invoiceLogoInput) {
+    invoiceLogoInput.addEventListener('change', async () => {
+        if (!invoiceLogoInput.files || invoiceLogoInput.files.length === 0) {
+            updateInvoiceLogoPreview(state.invoiceLogoDataUrl);
+            return;
+        }
+        const file = invoiceLogoInput.files[0];
+        try {
+            const dataUrl = await readFileAsDataUrl(file);
+            updateInvoiceLogoPreview(dataUrl);
+        } catch (error) {
+            showMessage(error.message || 'Logo konnte nicht gelesen werden.', 'error');
+            updateInvoiceLogoPreview(state.invoiceLogoDataUrl);
+        }
+    });
+}
+
+if (invoiceLogoForm) {
+    invoiceLogoForm.addEventListener('submit', async (event) => {
+        event.preventDefault();
+        if (!requireToken()) {
+            return;
+        }
+        let dataUrl = state.invoiceLogoDataUrl;
+        if (invoiceLogoInput && invoiceLogoInput.files && invoiceLogoInput.files.length > 0) {
+            try {
+                dataUrl = await readFileAsDataUrl(invoiceLogoInput.files[0]);
+            } catch (error) {
+                showMessage(error.message || 'Logo konnte nicht gelesen werden.', 'error');
+                return;
+            }
+        }
+        if (!dataUrl) {
+            showMessage('Bitte wählen Sie ein Logo aus.', 'error');
+            return;
+        }
+        try {
+            const response = await apiFetch('settings/invoice-logo', {
+                method: 'PUT',
+                body: JSON.stringify({ image: dataUrl }),
+            });
+            const logoData = response && typeof response === 'object' ? response.logo || dataUrl : dataUrl;
+            updateInvoiceLogoPreview(logoData);
+            if (invoiceLogoInput) {
+                invoiceLogoInput.value = '';
+            }
+            showMessage('Rechnungslogo gespeichert.', 'success');
+        } catch (error) {
+            showMessage(error.message, 'error');
+        }
+    });
+}
+
+if (removeInvoiceLogoButton) {
+    removeInvoiceLogoButton.addEventListener('click', async (event) => {
+        event.preventDefault();
+        if (!requireToken()) {
+            return;
+        }
+        try {
+            await apiFetch('settings/invoice-logo', { method: 'DELETE' });
+            updateInvoiceLogoPreview(null);
+            if (invoiceLogoInput) {
+                invoiceLogoInput.value = '';
+            }
+            showMessage('Rechnungslogo entfernt.', 'success');
+        } catch (error) {
+            showMessage(error.message, 'error');
+        }
+    });
+}
 
 document.getElementById('task-form').addEventListener('submit', async (event) => {
     event.preventDefault();

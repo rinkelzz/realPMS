@@ -320,6 +320,19 @@ function getSchemaStatements(): array
                 updated_at TIMESTAMP NULL
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
         SQL,
+        'articles' => <<<'SQL'
+            CREATE TABLE IF NOT EXISTS articles (
+                id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+                name VARCHAR(150) NOT NULL,
+                description TEXT NULL,
+                charge_scheme ENUM('per_person_per_day','per_room_per_day','per_stay','per_person','per_day') NOT NULL DEFAULT 'per_person_per_day',
+                unit_price DECIMAL(10,2) NOT NULL DEFAULT 0,
+                tax_rate DECIMAL(5,2) NOT NULL DEFAULT 19.00,
+                is_active TINYINT(1) NOT NULL DEFAULT 1,
+                created_at TIMESTAMP NULL,
+                updated_at TIMESTAMP NULL
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+        SQL,
         'reservations' => <<<'SQL'
             CREATE TABLE IF NOT EXISTS reservations (
                 id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
@@ -350,6 +363,24 @@ function getSchemaStatements(): array
                 PRIMARY KEY (reservation_id, room_id),
                 CONSTRAINT fk_reservation_rooms_reservation FOREIGN KEY (reservation_id) REFERENCES reservations(id) ON DELETE CASCADE,
                 CONSTRAINT fk_reservation_rooms_room FOREIGN KEY (room_id) REFERENCES rooms(id)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+        SQL,
+        'reservation_articles' => <<<'SQL'
+            CREATE TABLE IF NOT EXISTS reservation_articles (
+                id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+                reservation_id BIGINT UNSIGNED NOT NULL,
+                article_id BIGINT UNSIGNED NOT NULL,
+                description VARCHAR(255) NOT NULL,
+                charge_scheme ENUM('per_person_per_day','per_room_per_day','per_stay','per_person','per_day') NOT NULL,
+                multiplier DECIMAL(10,2) NOT NULL DEFAULT 1,
+                quantity DECIMAL(10,2) NOT NULL DEFAULT 0,
+                unit_price DECIMAL(10,2) NOT NULL DEFAULT 0,
+                tax_rate DECIMAL(5,2) NOT NULL DEFAULT 19.00,
+                total_amount DECIMAL(10,2) NOT NULL DEFAULT 0,
+                created_at TIMESTAMP NULL,
+                updated_at TIMESTAMP NULL,
+                CONSTRAINT fk_reservation_articles_reservation FOREIGN KEY (reservation_id) REFERENCES reservations(id) ON DELETE CASCADE,
+                CONSTRAINT fk_reservation_articles_article FOREIGN KEY (article_id) REFERENCES articles(id)
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
         SQL,
         'invoices' => <<<'SQL'

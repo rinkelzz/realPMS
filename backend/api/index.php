@@ -34,6 +34,17 @@ const DEFAULT_CALENDAR_COLORS = [
     'no_show' => '#7c3aed',
 ];
 
+const ARTICLE_CHARGE_SCHEMES = [
+    'per_person_per_day',
+    'per_room_per_day',
+    'per_stay',
+    'per_person',
+    'per_day',
+];
+
+const GERMAN_VAT_STANDARD = 19.0;
+const GERMAN_VAT_REDUCED = 7.0;
+
 $method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
 $uri = $_SERVER['REQUEST_URI'] ?? '/';
 $pathInfo = $_SERVER['PATH_INFO'] ?? '';
@@ -62,22 +73,23 @@ if ($resource === '') {
         'resources' => [
             'room-types',
             'rate-plans',
-            'rooms',
-            'reservations',
-            'guests',
-            'companies',
-            'housekeeping/tasks',
-            'invoices',
-            'payments',
-            'reports',
-            'users',
-            'roles',
-            'permissions',
-            'integrations',
-            'guest-portal',
-            'settings',
-        ],
-    ]);
+        'rooms',
+        'reservations',
+        'guests',
+        'companies',
+        'housekeeping/tasks',
+        'invoices',
+        'payments',
+        'reports',
+        'users',
+        'roles',
+        'permissions',
+        'integrations',
+        'guest-portal',
+        'settings',
+        'articles',
+    ],
+]);
 }
 
 $publicResources = ['guest-portal'];
@@ -115,6 +127,9 @@ switch ($resource) {
         break;
     case 'reports':
         handleReports($method, $segments);
+        break;
+    case 'articles':
+        handleArticles($method, $segments);
         break;
     case 'users':
         handleUsers($method, $segments);
@@ -522,6 +537,86 @@ function handleCompanies(string $method, array $segments): void
     jsonResponse(['error' => 'Unsupported method.'], 405);
 }
 
+function handleArticles(string $method, array $segments): void
+{
+    $pdo = db();
+    $id = $segments[1] ?? null;
+
+    if ($method === 'GET') {
+        if ($id !== null) {
+            $stmt = $pdo->prepare('SELECT * FROM articles WHERE id = :id');
+            $stmt->execute(['id' => $id]);
+            $article = $stmt->fetch();
+            if (!$article) {
+                jsonResponse(['error' => 'Article not found.'], 404);
+            }
+            jsonResponse($article);
+        }
+
+        $includeInactive = isset($_GET['include_inactive']) && ($_GET['include_inactive'] === '1' || strtolower((string) $_GET['include_inactive']) === 'true');
+        $query = 'SELECT * FROM articles';
+        if (!$includeInactive) {
+            $query .= ' WHERE is_active = 1';
+        }
+        $query .= ' ORDER BY name';
+        $stmt = $pdo->query($query);
+        jsonResponse($stmt->fetchAll());
+    }
+
+    if ($method === 'POST' && $id === null) {
+        $data = parseJsonBody();
+        $normalized = normalizeArticlePayload($data);
+
+        $stmt = $pdo->prepare('INSERT INTO articles (name, description, charge_scheme, unit_price, tax_rate, is_active, created_at, updated_at) VALUES (:name, :description, :charge_scheme, :unit_price, :tax_rate, :is_active, :created_at, :updated_at)');
+        $stmt->execute([
+            'name' => $normalized['name'],
+            'description' => $normalized['description'],
+            'charge_scheme' => $normalized['charge_scheme'],
+            'unit_price' => $normalized['unit_price'],
+            'tax_rate' => $normalized['tax_rate'],
+            'is_active' => $normalized['is_active'],
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        jsonResponse(['id' => $pdo->lastInsertId()], 201);
+    }
+
+    if (($method === 'PUT' || $method === 'PATCH') && $id !== null) {
+        $data = parseJsonBody();
+        $normalized = normalizeArticlePayload($data, false);
+        if (!$normalized) {
+            jsonResponse(['error' => 'No changes supplied.'], 422);
+        }
+
+        $fields = [];
+        $params = ['id' => $id];
+        foreach ($normalized as $key => $value) {
+            $fields[] = sprintf('%s = :%s', $key, $key);
+            $params[$key] = $value;
+        }
+        $fields[] = 'updated_at = :updated_at';
+        $params['updated_at'] = now();
+
+        $sql = sprintf('UPDATE articles SET %s WHERE id = :id', implode(', ', $fields));
+        $stmt = $pdo->prepare($sql);
+        $stmt->execute($params);
+
+        jsonResponse(['updated' => true]);
+    }
+
+    if ($method === 'DELETE' && $id !== null) {
+        $stmt = $pdo->prepare('UPDATE articles SET is_active = 0, updated_at = :updated_at WHERE id = :id');
+        $stmt->execute([
+            'updated_at' => now(),
+            'id' => $id,
+        ]);
+        jsonResponse(['deleted' => true]);
+    }
+
+    jsonResponse(['error' => 'Unsupported method.'], 405);
+}
+
 function handleReservations(string $method, array $segments): void
 {
     $pdo = db();
@@ -538,6 +633,7 @@ function handleReservations(string $method, array $segments): void
             $reservation['rooms'] = fetchReservationRooms((int) $id);
             $reservation['documents'] = fetchReservationDocuments((int) $id);
             $reservation['status_history'] = fetchReservationStatusLogs((int) $id);
+            $reservation['articles'] = fetchReservationArticles((int) $id);
             jsonResponse($reservation);
         }
 
@@ -612,6 +708,7 @@ function handleReservations(string $method, array $segments): void
             ]);
 
             $reservationId = (int) $pdo->lastInsertId();
+            $roomIds = extractRoomIdsFromSelection($data['rooms']);
             assignRoomsToReservation(
                 $pdo,
                 $reservationId,
@@ -619,6 +716,17 @@ function handleReservations(string $method, array $segments): void
                 $data['check_in_date'],
                 $data['check_out_date'],
                 $guestCount
+            );
+            $roomCount = count($roomIds);
+            $articleSelections = isset($data['articles']) && is_array($data['articles']) ? $data['articles'] : [];
+            syncReservationArticles(
+                $pdo,
+                $reservationId,
+                $articleSelections,
+                $data['check_in_date'],
+                $data['check_out_date'],
+                $guestCount,
+                $roomCount
             );
             logReservationStatus($pdo, $reservationId, $statusValue, $data['status_notes'] ?? null, $data['recorded_by'] ?? null);
             updateRoomsForReservationStatus($pdo, $reservationId, $statusValue, $data['status_notes'] ?? null, $data['recorded_by'] ?? null);
@@ -661,6 +769,7 @@ function handleReservations(string $method, array $segments): void
 
         $roomSelection = !empty($data['rooms']) ? $data['rooms'] : fetchReservationRooms((int) $id);
         $roomIds = extractRoomIdsFromSelection($roomSelection);
+        $roomCount = count($roomIds);
         ensureRoomCapacity($pdo, $roomIds, $guestCount);
 
         if (empty($data['rooms']) && (array_key_exists('check_in_date', $data) || array_key_exists('check_out_date', $data))) {
@@ -670,6 +779,10 @@ function handleReservations(string $method, array $segments): void
                 }
             }
         }
+
+        $roomsChanged = !empty($data['rooms']);
+        $datesChanged = array_key_exists('check_in_date', $data) || array_key_exists('check_out_date', $data);
+        $guestChanged = array_key_exists('adults', $data) || array_key_exists('children', $data);
 
         foreach ($fields as $field) {
             if (array_key_exists($field, $data)) {
@@ -745,6 +858,28 @@ function handleReservations(string $method, array $segments): void
                     $targetCheckOut,
                     $guestCount,
                     (int) $id
+                );
+            }
+
+            if (array_key_exists('articles', $data)) {
+                $articleSelections = is_array($data['articles']) ? $data['articles'] : [];
+                syncReservationArticles(
+                    $pdo,
+                    (int) $id,
+                    $articleSelections,
+                    $targetCheckIn,
+                    $targetCheckOut,
+                    $guestCount,
+                    $roomCount
+                );
+            } elseif ($roomsChanged || $datesChanged || $guestChanged) {
+                recalculateReservationArticles(
+                    $pdo,
+                    (int) $id,
+                    $targetCheckIn,
+                    $targetCheckOut,
+                    $guestCount,
+                    $roomCount
                 );
             }
 
@@ -861,6 +996,23 @@ function validateReservationPayload(array $data): void
     if (isset($data['status']) && normalizeReservationStatus((string) $data['status']) === null) {
         jsonResponse(['error' => 'Unsupported reservation status.'], 422);
     }
+
+    if (isset($data['articles'])) {
+        if (!is_array($data['articles'])) {
+            jsonResponse(['error' => 'articles must be an array.'], 422);
+        }
+        foreach ($data['articles'] as $article) {
+            if (!is_array($article) || empty($article['article_id'])) {
+                jsonResponse(['error' => 'Each article selection requires an article_id.'], 422);
+            }
+            if (isset($article['multiplier']) && (float) $article['multiplier'] < 0) {
+                jsonResponse(['error' => 'Article multiplier cannot be negative.'], 422);
+            }
+            if (isset($article['quantity']) && (float) $article['quantity'] < 0) {
+                jsonResponse(['error' => 'Article quantity cannot be negative.'], 422);
+            }
+        }
+    }
 }
 
 function calculateGuestCount($adults, $children): int
@@ -869,6 +1021,84 @@ function calculateGuestCount($adults, $children): int
     $childCount = max(0, (int) $children);
 
     return $adultCount + $childCount;
+}
+
+function normalizeArticlePayload(array $data, bool $requireAll = true): array
+{
+    if (!is_array($data)) {
+        jsonResponse(['error' => 'Invalid payload.'], 422);
+    }
+
+    $normalized = [];
+
+    if ($requireAll || array_key_exists('name', $data)) {
+        $name = trim((string) ($data['name'] ?? ''));
+        if ($name === '' && $requireAll) {
+            jsonResponse(['error' => 'Name is required.'], 422);
+        }
+        if ($name !== '') {
+            $normalized['name'] = $name;
+        }
+    }
+
+    if ($requireAll || array_key_exists('description', $data)) {
+        $description = isset($data['description']) ? trim((string) $data['description']) : null;
+        $normalized['description'] = $description !== '' ? $description : null;
+    }
+
+    if ($requireAll || array_key_exists('charge_scheme', $data)) {
+        $scheme = $data['charge_scheme'] ?? null;
+        $normalizedScheme = normalizeChargeScheme($scheme, !$requireAll);
+        if ($normalizedScheme !== null) {
+            $normalized['charge_scheme'] = $normalizedScheme;
+        } elseif ($requireAll) {
+            $normalized['charge_scheme'] = 'per_person_per_day';
+        }
+    }
+
+    if ($requireAll || array_key_exists('unit_price', $data)) {
+        $unitPrice = isset($data['unit_price']) ? (float) $data['unit_price'] : 0.0;
+        if ($unitPrice < 0) {
+            jsonResponse(['error' => 'unit_price must be zero or positive.'], 422);
+        }
+        $normalized['unit_price'] = round($unitPrice, 2);
+    }
+
+    if ($requireAll || array_key_exists('tax_rate', $data)) {
+        $taxRate = isset($data['tax_rate']) ? (float) $data['tax_rate'] : GERMAN_VAT_STANDARD;
+        if ($taxRate < 0) {
+            jsonResponse(['error' => 'tax_rate must be zero or positive.'], 422);
+        }
+        $normalized['tax_rate'] = round($taxRate, 2);
+    }
+
+    if ($requireAll || array_key_exists('is_active', $data)) {
+        $isActive = isset($data['is_active']) ? (int) filter_var($data['is_active'], FILTER_VALIDATE_BOOLEAN) : 1;
+        $normalized['is_active'] = $isActive ? 1 : 0;
+    }
+
+    if ($requireAll) {
+        return $normalized;
+    }
+
+    return array_filter(
+        $normalized,
+        static fn ($value) => $value !== null && $value !== '' && $value !== []
+    );
+}
+
+function normalizeChargeScheme($value, bool $allowNull = false): ?string
+{
+    if ($value === null || $value === '') {
+        return $allowNull ? null : 'per_person_per_day';
+    }
+
+    $scheme = strtolower((string) $value);
+    if (!in_array($scheme, ARTICLE_CHARGE_SCHEMES, true)) {
+        jsonResponse(['error' => 'Unsupported article charge scheme.'], 422);
+    }
+
+    return $scheme;
 }
 
 function normalizeRoomAssignments(array $rooms): array
@@ -1057,7 +1287,12 @@ function isRoomAvailable(PDO $pdo, int $roomId, string $checkIn, string $checkOu
 function fetchReservationRooms(int $reservationId): array
 {
     $pdo = db();
-    $stmt = $pdo->prepare('SELECT rr.*, rooms.room_number FROM reservation_rooms rr JOIN rooms ON rooms.id = rr.room_id WHERE rr.reservation_id = :id');
+    $sql = 'SELECT rr.*, rooms.room_number, rooms.room_type_id, rt.name AS room_type_name, rt.base_rate AS room_type_base_rate'
+        . ' FROM reservation_rooms rr'
+        . ' JOIN rooms ON rooms.id = rr.room_id'
+        . ' LEFT JOIN room_types rt ON rt.id = rooms.room_type_id'
+        . ' WHERE rr.reservation_id = :id';
+    $stmt = $pdo->prepare($sql);
     $stmt->execute(['id' => $reservationId]);
     return $stmt->fetchAll();
 }
@@ -1066,6 +1301,14 @@ function fetchReservationDocuments(int $reservationId): array
 {
     $pdo = db();
     $stmt = $pdo->prepare('SELECT * FROM reservation_documents WHERE reservation_id = :id ORDER BY uploaded_at DESC');
+    $stmt->execute(['id' => $reservationId]);
+    return $stmt->fetchAll();
+}
+
+function fetchReservationArticles(int $reservationId): array
+{
+    $pdo = db();
+    $stmt = $pdo->prepare('SELECT ra.*, a.name AS article_name FROM reservation_articles ra LEFT JOIN articles a ON a.id = ra.article_id WHERE ra.reservation_id = :id ORDER BY ra.id');
     $stmt->execute(['id' => $reservationId]);
     return $stmt->fetchAll();
 }
@@ -1109,6 +1352,157 @@ function addReservationDocument(int $reservationId, array $data): void
     ]);
 
     jsonResponse(['created' => true], 201);
+}
+
+function syncReservationArticles(PDO $pdo, int $reservationId, array $articles, string $checkIn, string $checkOut, int $guestCount, int $roomCount): void
+{
+    $pdo->prepare('DELETE FROM reservation_articles WHERE reservation_id = :id')->execute(['id' => $reservationId]);
+
+    if (empty($articles)) {
+        return;
+    }
+
+    $articleIds = [];
+    foreach ($articles as $article) {
+        $articleId = isset($article['article_id']) ? (int) $article['article_id'] : 0;
+        if ($articleId <= 0) {
+            throw new InvalidArgumentException('article_id must reference an existing article.');
+        }
+        $articleIds[] = $articleId;
+    }
+
+    if (empty($articleIds)) {
+        return;
+    }
+
+    $uniqueIds = array_values(array_unique($articleIds));
+    $placeholders = implode(', ', array_fill(0, count($uniqueIds), '?'));
+    $stmt = $pdo->prepare("SELECT * FROM articles WHERE id IN ($placeholders)");
+    $stmt->execute($uniqueIds);
+    $definitions = [];
+    foreach ($stmt->fetchAll() as $definition) {
+        $definitions[(int) $definition['id']] = $definition;
+    }
+
+    $insert = $pdo->prepare('INSERT INTO reservation_articles (reservation_id, article_id, description, charge_scheme, multiplier, quantity, unit_price, tax_rate, total_amount, created_at, updated_at) VALUES (:reservation_id, :article_id, :description, :charge_scheme, :multiplier, :quantity, :unit_price, :tax_rate, :total_amount, :created_at, :updated_at)');
+
+    foreach ($articles as $article) {
+        $articleId = (int) ($article['article_id'] ?? 0);
+        if ($articleId <= 0 || !isset($definitions[$articleId])) {
+            throw new InvalidArgumentException('article_id must reference an existing article.');
+        }
+        $definition = $definitions[$articleId];
+        $scheme = normalizeChargeScheme($article['charge_scheme'] ?? $definition['charge_scheme']);
+        $rawMultiplier = $article['multiplier'] ?? ($article['quantity'] ?? 1);
+        $multiplier = max(0.0, (float) $rawMultiplier);
+        if ($multiplier <= 0.0) {
+            continue;
+        }
+        $unitPrice = array_key_exists('unit_price', $article) ? (float) $article['unit_price'] : (float) ($definition['unit_price'] ?? 0);
+        if ($unitPrice < 0) {
+            $unitPrice = 0;
+        }
+        $taxRate = array_key_exists('tax_rate', $article) ? (float) $article['tax_rate'] : (float) ($definition['tax_rate'] ?? GERMAN_VAT_STANDARD);
+        if ($taxRate < 0) {
+            $taxRate = 0;
+        }
+
+        $quantity = calculateReservationArticleQuantity($scheme, $checkIn, $checkOut, $guestCount, $roomCount, $multiplier);
+        if ($quantity <= 0) {
+            continue;
+        }
+
+        $insert->execute([
+            'reservation_id' => $reservationId,
+            'article_id' => $articleId,
+            'description' => $definition['name'] ?? ('Artikel ' . $articleId),
+            'charge_scheme' => $scheme,
+            'multiplier' => round($multiplier, 2),
+            'quantity' => round($quantity, 2),
+            'unit_price' => round($unitPrice, 2),
+            'tax_rate' => round($taxRate, 2),
+            'total_amount' => round($quantity * $unitPrice, 2),
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+    }
+}
+
+function recalculateReservationArticles(PDO $pdo, int $reservationId, string $checkIn, string $checkOut, int $guestCount, int $roomCount): void
+{
+    $stmt = $pdo->prepare('SELECT id, charge_scheme, multiplier, unit_price FROM reservation_articles WHERE reservation_id = :id');
+    $stmt->execute(['id' => $reservationId]);
+    $records = $stmt->fetchAll();
+    if (!$records) {
+        return;
+    }
+
+    $update = $pdo->prepare('UPDATE reservation_articles SET quantity = :quantity, total_amount = :total_amount, updated_at = :updated_at WHERE id = :id');
+    foreach ($records as $record) {
+        $scheme = normalizeChargeScheme($record['charge_scheme'] ?? null);
+        $multiplier = isset($record['multiplier']) ? (float) $record['multiplier'] : 1.0;
+        if ($multiplier <= 0) {
+            $quantity = 0.0;
+            $total = 0.0;
+        } else {
+            $quantity = calculateReservationArticleQuantity($scheme, $checkIn, $checkOut, $guestCount, $roomCount, $multiplier);
+            $unitPrice = isset($record['unit_price']) ? (float) $record['unit_price'] : 0.0;
+            $total = round($quantity * $unitPrice, 2);
+        }
+
+        $update->execute([
+            'quantity' => round($quantity, 2),
+            'total_amount' => $total,
+            'updated_at' => now(),
+            'id' => $record['id'],
+        ]);
+    }
+}
+
+function calculateStayNights(string $checkIn, string $checkOut): int
+{
+    $start = DateTimeImmutable::createFromFormat('Y-m-d', $checkIn);
+    $end = DateTimeImmutable::createFromFormat('Y-m-d', $checkOut);
+    if (!$start || !$end) {
+        return 0;
+    }
+
+    $diff = $start->diff($end);
+    return max(0, (int) $diff->days);
+}
+
+function calculateReservationArticleQuantity(string $scheme, string $checkIn, string $checkOut, int $guestCount, int $roomCount, float $multiplier): float
+{
+    $multiplier = max(0.0, $multiplier);
+    if ($multiplier === 0.0) {
+        return 0.0;
+    }
+
+    $nights = calculateStayNights($checkIn, $checkOut);
+    $guestCount = max(0, $guestCount);
+    $roomCount = max(0, $roomCount);
+
+    $base = 0.0;
+    switch ($scheme) {
+        case 'per_room_per_day':
+            $base = $roomCount * $nights;
+            break;
+        case 'per_person_per_day':
+            $base = $guestCount * $nights;
+            break;
+        case 'per_day':
+            $base = $nights;
+            break;
+        case 'per_person':
+            $base = $guestCount;
+            break;
+        case 'per_stay':
+        default:
+            $base = 1;
+            break;
+    }
+
+    return max(0.0, $base * $multiplier);
 }
 
 function handleHousekeeping(string $method, array $segments): void
@@ -1317,16 +1711,19 @@ function handleInvoices(string $method, array $segments): void
 {
     $pdo = db();
     $id = $segments[1] ?? null;
+    $action = $segments[2] ?? null;
+
+    if ($method === 'GET' && $id !== null && $action === 'pdf') {
+        outputInvoicePdf((int) $id);
+        return;
+    }
 
     if ($method === 'GET') {
         if ($id !== null) {
-            $stmt = $pdo->prepare('SELECT * FROM invoices WHERE id = :id');
-            $stmt->execute(['id' => $id]);
-            $invoice = $stmt->fetch();
+            $invoice = getInvoiceWithRelations((int) $id);
             if (!$invoice) {
                 jsonResponse(['error' => 'Invoice not found.'], 404);
             }
-            $invoice['items'] = fetchInvoiceItems((int) $id);
             jsonResponse($invoice);
         }
 
@@ -1336,8 +1733,8 @@ function handleInvoices(string $method, array $segments): void
 
     if ($method === 'POST' && $id === null) {
         $data = parseJsonBody();
-        if (empty($data['reservation_id']) || empty($data['items']) || !is_array($data['items'])) {
-            jsonResponse(['error' => 'reservation_id and items are required.'], 422);
+        if (empty($data['reservation_id'])) {
+            jsonResponse(['error' => 'reservation_id is required.'], 422);
         }
 
         $invoiceNumber = $data['invoice_number'] ?? generateInvoiceNumber();
@@ -1345,7 +1742,23 @@ function handleInvoices(string $method, array $segments): void
         $dueDate = $data['due_date'] ?? null;
         $status = $data['status'] ?? 'issued';
 
-        $totals = calculateInvoiceTotals($data['items']);
+        $items = [];
+        if (!empty($data['items']) && is_array($data['items'])) {
+            $items = $data['items'];
+        } else {
+            $includeArticles = !isset($data['include_articles']) || filter_var($data['include_articles'], FILTER_VALIDATE_BOOLEAN);
+            try {
+                $items = buildInvoiceItemsForReservation((int) $data['reservation_id'], $includeArticles);
+            } catch (Throwable $exception) {
+                jsonResponse(['error' => $exception->getMessage()], 422);
+            }
+        }
+
+        if (!$items) {
+            jsonResponse(['error' => 'Unable to create invoice without any items.'], 422);
+        }
+
+        $totals = calculateInvoiceTotals($items);
 
         $stmt = $pdo->prepare('INSERT INTO invoices (reservation_id, invoice_number, issue_date, due_date, total_amount, tax_amount, status, created_at, updated_at) VALUES (:reservation_id, :invoice_number, :issue_date, :due_date, :total_amount, :tax_amount, :status, :created_at, :updated_at)');
         $stmt->execute([
@@ -1361,7 +1774,7 @@ function handleInvoices(string $method, array $segments): void
         ]);
 
         $invoiceId = (int) $pdo->lastInsertId();
-        storeInvoiceItems($invoiceId, $data['items']);
+        storeInvoiceItems($invoiceId, $items);
 
         jsonResponse(['id' => $invoiceId, 'invoice_number' => $invoiceNumber], 201);
     }
@@ -1421,6 +1834,233 @@ function calculateInvoiceTotals(array $items): array
         'tax' => round($tax, 2),
         'total' => round($subtotal + $tax, 2),
     ];
+}
+
+function fetchReservationBillingSnapshot(int $reservationId): array
+{
+    $pdo = db();
+    $sql = <<<SQL
+        SELECT r.*, g.first_name, g.last_name, g.email, g.phone, g.address, g.city, g.country, g.company_id,
+               c.name AS company_name, c.address AS company_address, c.city AS company_city, c.country AS company_country,
+               c.email AS company_email, c.phone AS company_phone,
+               rp.base_price AS rate_plan_base_price, rp.currency AS rate_plan_currency
+        FROM reservations r
+        JOIN guests g ON g.id = r.guest_id
+        LEFT JOIN companies c ON c.id = g.company_id
+        LEFT JOIN rate_plans rp ON rp.id = r.rate_plan_id
+        WHERE r.id = :id
+    SQL;
+    $stmt = $pdo->prepare($sql);
+    $stmt->execute(['id' => $reservationId]);
+    $reservation = $stmt->fetch();
+    if (!$reservation) {
+        throw new InvalidArgumentException('Reservation not found for invoice generation.');
+    }
+
+    $reservation['rooms'] = fetchReservationRooms($reservationId);
+    $reservation['articles'] = fetchReservationArticles($reservationId);
+
+    return $reservation;
+}
+
+function determineNightlyRate(array $room, array $reservation, int $nights): float
+{
+    $nightlyRate = isset($room['nightly_rate']) ? (float) $room['nightly_rate'] : 0.0;
+    if ($nightlyRate <= 0 && isset($reservation['rate_plan_base_price'])) {
+        $nightlyRate = (float) $reservation['rate_plan_base_price'];
+    }
+    if ($nightlyRate <= 0 && isset($room['room_type_base_rate'])) {
+        $nightlyRate = (float) $room['room_type_base_rate'];
+    }
+    if ($nightlyRate <= 0 && isset($reservation['total_amount'])) {
+        $roomCount = max(1, count($reservation['rooms'] ?? []));
+        $nightCount = max(1, $nights);
+        $nightlyRate = ((float) $reservation['total_amount']) / ($roomCount * $nightCount);
+    }
+
+    return max(0.0, $nightlyRate);
+}
+
+function buildInvoiceItemsForReservation(int $reservationId, bool $includeArticles = true): array
+{
+    $reservation = fetchReservationBillingSnapshot($reservationId);
+    $nights = calculateStayNights((string) $reservation['check_in_date'], (string) $reservation['check_out_date']);
+    $nights = max(1, $nights);
+
+    $items = [];
+
+    foreach ($reservation['rooms'] as $room) {
+        $rate = determineNightlyRate($room, $reservation, $nights);
+        if ($rate <= 0) {
+            continue;
+        }
+        $labelParts = [];
+        $labelParts[] = $room['room_number'] ?? ('Zimmer ' . ($room['room_id'] ?? ''));
+        if (!empty($room['room_type_name'])) {
+            $labelParts[] = $room['room_type_name'];
+        }
+        $roomLabel = implode(' – ', array_filter($labelParts));
+        $items[] = [
+            'description' => sprintf('Zimmer %s · %d Nacht%s', $roomLabel, $nights, $nights === 1 ? '' : 'e'),
+            'quantity' => $nights,
+            'unit_price' => round($rate, 2),
+            'tax_rate' => GERMAN_VAT_REDUCED,
+        ];
+    }
+
+    if ($includeArticles) {
+        foreach ($reservation['articles'] as $article) {
+            $quantity = (float) ($article['quantity'] ?? 0);
+            $unitPrice = isset($article['unit_price']) ? (float) $article['unit_price'] : 0.0;
+            if ($quantity <= 0 || $unitPrice < 0) {
+                continue;
+            }
+            $description = $article['description'] ?? ($article['article_name'] ?? 'Zusatzleistung');
+            $taxRate = isset($article['tax_rate']) ? (float) $article['tax_rate'] : GERMAN_VAT_STANDARD;
+            $items[] = [
+                'description' => $description,
+                'quantity' => round($quantity, 2),
+                'unit_price' => round($unitPrice, 2),
+                'tax_rate' => $taxRate,
+            ];
+        }
+    }
+
+    return $items;
+}
+
+function getInvoiceWithRelations(int $invoiceId): ?array
+{
+    $pdo = db();
+    $sql = <<<SQL
+        SELECT i.*, r.confirmation_number, r.check_in_date, r.check_out_date, r.adults, r.children, r.currency AS reservation_currency,
+               g.first_name, g.last_name, g.email, g.phone, g.address, g.city, g.country,
+               c.name AS company_name, c.address AS company_address, c.city AS company_city, c.country AS company_country,
+               c.email AS company_email, c.phone AS company_phone
+        FROM invoices i
+        JOIN reservations r ON r.id = i.reservation_id
+        JOIN guests g ON g.id = r.guest_id
+        LEFT JOIN companies c ON c.id = g.company_id
+        WHERE i.id = :id
+    SQL;
+    $stmt = $pdo->prepare($sql);
+    $stmt->execute(['id' => $invoiceId]);
+    $invoice = $stmt->fetch();
+    if (!$invoice) {
+        return null;
+    }
+    $invoice['items'] = fetchInvoiceItems($invoiceId);
+
+    return $invoice;
+}
+
+function outputInvoicePdf(int $invoiceId): void
+{
+    $invoice = getInvoiceWithRelations($invoiceId);
+    if (!$invoice) {
+        jsonResponse(['error' => 'Invoice not found.'], 404);
+    }
+
+    require_once __DIR__ . '/../lib/fpdf.php';
+
+    $pdf = new FPDF('P', 'mm', 'A4');
+    $pdf->SetMargins(15, 20, 15);
+    $pdf->AddPage();
+
+    $logo = getInvoiceLogoDescriptor();
+    if ($logo && is_file($logo['path'])) {
+        $pdf->Image($logo['path'], 15, 15, 40);
+        $pdf->SetY(20);
+    }
+
+    $pdf->SetFont('Arial', 'B', 16);
+    $pdf->Cell(0, 10, pdfText('Rechnung'), 0, 1, 'R');
+
+    $pdf->SetFont('Arial', '', 11);
+    $pdf->Cell(0, 6, pdfText('Rechnungsnummer: ' . ($invoice['invoice_number'] ?? '')), 0, 1, 'R');
+    if (!empty($invoice['issue_date'])) {
+        $pdf->Cell(0, 6, pdfText('Ausgestellt am: ' . formatGermanDate($invoice['issue_date'])), 0, 1, 'R');
+    }
+    if (!empty($invoice['due_date'])) {
+        $pdf->Cell(0, 6, pdfText('Fällig am: ' . formatGermanDate($invoice['due_date'])), 0, 1, 'R');
+    }
+
+    $pdf->Ln(6);
+
+    $guestName = trim(($invoice['first_name'] ?? '') . ' ' . ($invoice['last_name'] ?? ''));
+    $recipientLines = array_filter([
+        $invoice['company_name'] ?? null,
+        $guestName ?: null,
+        $invoice['company_address'] ?? $invoice['address'] ?? null,
+        trim(($invoice['company_city'] ?? $invoice['city'] ?? '') . ' ' . ($invoice['company_country'] ?? $invoice['country'] ?? '')),
+    ]);
+
+    foreach ($recipientLines as $line) {
+        $pdf->Cell(0, 6, pdfText($line), 0, 1);
+    }
+
+    $pdf->Ln(4);
+
+    if (!empty($invoice['check_in_date']) || !empty($invoice['check_out_date'])) {
+        $stay = sprintf('%s – %s', formatGermanDate($invoice['check_in_date']), formatGermanDate($invoice['check_out_date']));
+        $pdf->Cell(0, 6, pdfText('Aufenthalt: ' . $stay), 0, 1);
+    }
+    if (!empty($invoice['confirmation_number'])) {
+        $pdf->Cell(0, 6, pdfText('Bestätigungsnummer: ' . $invoice['confirmation_number']), 0, 1);
+    }
+
+    $pdf->Ln(6);
+
+    $pdf->SetFont('Arial', 'B', 11);
+    $widths = [90, 20, 30, 20, 30];
+    $headers = ['Beschreibung', 'Menge', 'Einzelpreis', 'MwSt', 'Gesamt'];
+    $pdf->SetFillColor(240, 240, 240);
+    foreach ($headers as $index => $header) {
+        $align = $index === 0 ? 'L' : 'R';
+        $pdf->Cell($widths[$index], 8, pdfText($header), 1, $index === count($headers) - 1 ? 1 : 0, $align, true);
+    }
+
+    $pdf->SetFont('Arial', '', 10);
+    $currency = $invoice['reservation_currency'] ?? 'EUR';
+    foreach ($invoice['items'] as $item) {
+        $quantity = (float) ($item['quantity'] ?? 0);
+        $unit = (float) ($item['unit_price'] ?? 0);
+        $taxRate = isset($item['tax_rate']) ? (float) $item['tax_rate'] : 0.0;
+        $lineTotal = isset($item['total_amount']) ? (float) $item['total_amount'] : ($quantity * $unit * (1 + $taxRate / 100));
+        $startX = $pdf->GetX();
+        $startY = $pdf->GetY();
+        $desc = pdfText($item['description'] ?? '');
+        $pdf->MultiCell($widths[0], 6, $desc, 1, 'L');
+        $currentY = $pdf->GetY();
+        $rowHeight = $currentY - $startY;
+        $pdf->SetXY($startX + $widths[0], $startY);
+        $pdf->Cell($widths[1], $rowHeight, pdfText(number_format($quantity, 2, ',', '.')), 1, 0, 'R');
+        $pdf->Cell($widths[2], $rowHeight, pdfText(number_format($unit, 2, ',', '.') . ' ' . $currency), 1, 0, 'R');
+        $pdf->Cell($widths[3], $rowHeight, pdfText(number_format($taxRate, 1, ',', '.') . '%'), 1, 0, 'R');
+        $pdf->Cell($widths[4], $rowHeight, pdfText(number_format($lineTotal, 2, ',', '.') . ' ' . $currency), 1, 0, 'R');
+        $pdf->SetY($currentY);
+    }
+
+    $pdf->Ln(2);
+
+    $totals = calculateInvoiceTotals($invoice['items']);
+    $taxTotal = isset($invoice['tax_amount']) ? (float) $invoice['tax_amount'] : $totals['tax'];
+    $totalAmount = isset($invoice['total_amount']) ? (float) $invoice['total_amount'] : $totals['total'];
+    $subtotal = $totalAmount - $taxTotal;
+
+    $pdf->SetFont('Arial', 'B', 11);
+    $pdf->Cell(array_sum($widths) - $widths[4], 8, '', 0, 0);
+    $pdf->Cell($widths[4], 8, pdfText('Zwischensumme: ' . number_format($subtotal, 2, ',', '.') . ' ' . $currency), 0, 1, 'R');
+    $pdf->Cell(array_sum($widths) - $widths[4], 8, '', 0, 0);
+    $pdf->Cell($widths[4], 8, pdfText('MwSt: ' . number_format($taxTotal, 2, ',', '.') . ' ' . $currency), 0, 1, 'R');
+    $pdf->Cell(array_sum($widths) - $widths[4], 8, '', 0, 0);
+    $pdf->Cell($widths[4], 8, pdfText('Gesamt: ' . number_format($totalAmount, 2, ',', '.') . ' ' . $currency), 0, 1, 'R');
+
+    header('Content-Type: application/pdf');
+    $filename = sprintf('Rechnung-%s.pdf', $invoice['invoice_number'] ?? $invoiceId);
+    header('Content-Disposition: inline; filename="' . $filename . '"');
+    $pdf->Output('I', $filename);
+    exit;
 }
 
 function handlePayments(string $method, array $segments): void
@@ -1801,7 +2441,7 @@ function handleSettings(string $method, array $segments): void
     if ($subresource === null) {
         if ($method === 'GET') {
             jsonResponse([
-                'resources' => ['calendar-colors'],
+                'resources' => ['calendar-colors', 'invoice-logo'],
             ]);
         }
         jsonResponse(['error' => 'Unsupported method.'], 405);
@@ -1853,6 +2493,53 @@ function handleSettings(string $method, array $segments): void
         jsonResponse(['error' => 'Unsupported method.'], 405);
     }
 
+    if ($subresource === 'invoice-logo') {
+        if ($method === 'GET') {
+            $descriptor = getInvoiceLogoDescriptor();
+            if (!$descriptor) {
+                jsonResponse(['logo' => null]);
+            }
+            $binary = @file_get_contents($descriptor['path']);
+            if ($binary === false) {
+                jsonResponse(['logo' => null]);
+            }
+            $dataUrl = sprintf('data:%s;base64,%s', $descriptor['mime'], base64_encode($binary));
+            jsonResponse([
+                'logo' => $dataUrl,
+                'updated_at' => $descriptor['updated_at'] ?? null,
+            ]);
+        }
+
+        if ($method === 'DELETE') {
+            deleteInvoiceLogo();
+            jsonResponse(['logo' => null]);
+        }
+
+        if ($method === 'POST' || $method === 'PUT') {
+            $data = parseJsonBody();
+            if (!empty($data['remove'])) {
+                deleteInvoiceLogo();
+                jsonResponse(['logo' => null]);
+            }
+            if (empty($data['image']) || !is_string($data['image'])) {
+                jsonResponse(['error' => 'image payload is required.'], 422);
+            }
+            try {
+                $descriptor = saveInvoiceLogoImage($data['image']);
+            } catch (Throwable $exception) {
+                jsonResponse(['error' => $exception->getMessage()], 422);
+            }
+            $binary = file_get_contents($descriptor['path']);
+            $dataUrl = sprintf('data:%s;base64,%s', $descriptor['mime'], base64_encode($binary));
+            jsonResponse([
+                'logo' => $dataUrl,
+                'updated_at' => $descriptor['updated_at'] ?? null,
+            ]);
+        }
+
+        jsonResponse(['error' => 'Unsupported method.'], 405);
+    }
+
     jsonResponse(['error' => 'Unknown settings resource.'], 404);
 }
 
@@ -1864,4 +2551,164 @@ function generateConfirmationNumber(): string
 function generateInvoiceNumber(): string
 {
     return 'INV-' . date('Ymd') . '-' . strtoupper(bin2hex(random_bytes(3)));
+}
+
+function pdfText(string $value): string
+{
+    $converted = @iconv('UTF-8', 'ISO-8859-1//TRANSLIT', $value);
+    if ($converted === false) {
+        return utf8_decode($value);
+    }
+
+    return $converted;
+}
+
+function formatGermanDate(?string $date): string
+{
+    if ($date === null || $date === '') {
+        return '';
+    }
+    $date = substr($date, 0, 10);
+    $dt = DateTimeImmutable::createFromFormat('Y-m-d', $date);
+    return $dt ? $dt->format('d.m.Y') : $date;
+}
+
+function decodeImagePayload(string $payload): array
+{
+    $data = $payload;
+    $mime = 'image/png';
+    if (str_contains($payload, ',')) {
+        [$meta, $encoded] = explode(',', $payload, 2);
+        $data = $encoded;
+        if (preg_match('/data:(.*?);base64/', $meta, $matches)) {
+            $mime = strtolower(trim($matches[1]));
+        }
+    }
+
+    $binary = base64_decode($data, true);
+    if ($binary === false) {
+        throw new InvalidArgumentException('Bilddaten konnten nicht dekodiert werden.');
+    }
+
+    $allowed = [
+        'image/png' => 'png',
+        'image/jpeg' => 'jpg',
+        'image/jpg' => 'jpg',
+    ];
+    if (!isset($allowed[$mime])) {
+        throw new InvalidArgumentException('Nur PNG- oder JPEG-Dateien werden unterstützt.');
+    }
+
+    return [
+        'binary' => $binary,
+        'mime' => $mime,
+        'extension' => $allowed[$mime],
+    ];
+}
+
+function storagePath(string $relative = ''): string
+{
+    $base = realpath(__DIR__ . '/..');
+    if ($base === false) {
+        $base = __DIR__ . '/..';
+    }
+    $base = rtrim($base, DIRECTORY_SEPARATOR) . DIRECTORY_SEPARATOR . 'storage';
+    if ($relative === '') {
+        return $base;
+    }
+
+    return $base . DIRECTORY_SEPARATOR . ltrim($relative, DIRECTORY_SEPARATOR);
+}
+
+function ensureStorageDirectory(string $relative): string
+{
+    $path = storagePath($relative);
+    if (!is_dir($path)) {
+        if (!mkdir($path, 0775, true) && !is_dir($path)) {
+            throw new RuntimeException('Verzeichnis konnte nicht erstellt werden: ' . $path);
+        }
+    }
+
+    return $path;
+}
+
+function getSetting(string $key): ?string
+{
+    $pdo = db();
+    $stmt = $pdo->prepare('SELECT `value` FROM settings WHERE `key` = :key');
+    $stmt->execute(['key' => $key]);
+    $value = $stmt->fetchColumn();
+    return $value === false ? null : $value;
+}
+
+function setSetting(string $key, ?string $value): void
+{
+    $pdo = db();
+    if ($value === null) {
+        $stmt = $pdo->prepare('DELETE FROM settings WHERE `key` = :key');
+        $stmt->execute(['key' => $key]);
+        return;
+    }
+
+    $stmt = $pdo->prepare('INSERT INTO settings (`key`, `value`, created_at, updated_at) VALUES (:key, :value, :created_at, :updated_at) ON DUPLICATE KEY UPDATE `value` = VALUES(`value`), updated_at = VALUES(updated_at)');
+    $timestamp = now();
+    $stmt->execute([
+        'key' => $key,
+        'value' => $value,
+        'created_at' => $timestamp,
+        'updated_at' => $timestamp,
+    ]);
+}
+
+function getInvoiceLogoDescriptor(): ?array
+{
+    $relative = getSetting('invoice_logo_path');
+    if (!$relative) {
+        return null;
+    }
+    $path = storagePath($relative);
+    if (!is_file($path)) {
+        return null;
+    }
+    $mime = getSetting('invoice_logo_mime') ?? (mime_content_type($path) ?: 'image/png');
+    $updatedAt = getSetting('invoice_logo_updated_at');
+
+    return [
+        'path' => $path,
+        'mime' => $mime,
+        'updated_at' => $updatedAt,
+    ];
+}
+
+function saveInvoiceLogoImage(string $payload): array
+{
+    $decoded = decodeImagePayload($payload);
+    deleteInvoiceLogo();
+    $directory = ensureStorageDirectory('invoice');
+    $filename = 'logo.' . $decoded['extension'];
+    $path = $directory . DIRECTORY_SEPARATOR . $filename;
+    if (file_put_contents($path, $decoded['binary']) === false) {
+        throw new RuntimeException('Logo konnte nicht gespeichert werden.');
+    }
+    $timestamp = now();
+    setSetting('invoice_logo_path', 'invoice/' . $filename);
+    setSetting('invoice_logo_mime', $decoded['mime']);
+    setSetting('invoice_logo_updated_at', $timestamp);
+
+    return [
+        'path' => $path,
+        'mime' => $decoded['mime'],
+        'updated_at' => $timestamp,
+    ];
+}
+
+function deleteInvoiceLogo(): void
+{
+    $descriptor = getInvoiceLogoDescriptor();
+    if ($descriptor && is_file($descriptor['path'])) {
+        @unlink($descriptor['path']);
+    }
+    setSetting('invoice_logo_path', null);
+    setSetting('invoice_logo_mime', null);
+    setSetting('invoice_logo_updated_at', null);
 }
