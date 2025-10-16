@@ -1,4 +1,6 @@
 const API_BASE = '../backend/api/index.php';
+const UPDATE_ENDPOINT = '../backend/update.php';
+const UPDATE_TOKEN_STORAGE_KEY = 'realpms_update_token';
 const CALENDAR_STATUS_ORDER = ['tentative', 'confirmed', 'checked_in', 'paid', 'checked_out', 'cancelled', 'no_show'];
 const CALENDAR_COLOR_DEFAULTS = {
     tentative: '#f97316',
@@ -73,6 +75,17 @@ try {
     }
 } catch (error) {
     // ignore storage access issues
+}
+
+if (systemUpdateTokenInput) {
+    try {
+        const storedUpdateToken = localStorage.getItem(UPDATE_TOKEN_STORAGE_KEY);
+        if (storedUpdateToken) {
+            systemUpdateTokenInput.value = storedUpdateToken;
+        }
+    } catch (error) {
+        // ignore storage access issues
+    }
 }
 
 const notificationEl = document.getElementById('notification');
@@ -154,6 +167,10 @@ const invoiceStorageForm = document.getElementById('invoice-storage-form');
 const invoiceStoragePasswordNote = document.getElementById('invoice-storage-password-note');
 const invoiceStorageStatus = document.getElementById('invoice-storage-status');
 const invoiceStorageClearButton = document.getElementById('invoice-storage-clear');
+const systemUpdateForm = document.getElementById('system-update-form');
+const systemUpdateTokenInput = document.getElementById('system-update-token');
+const systemUpdateLog = document.getElementById('system-update-log');
+const systemUpdateStatus = document.getElementById('system-update-status');
 
 let guestLookupDebounceId = null;
 let guestLookupRequestId = 0;
@@ -200,6 +217,47 @@ function showMessage(message, type = 'info', timeout = 4000) {
             notificationEl.className = 'notification';
         }, timeout);
     }
+}
+
+function setSystemUpdateStatus(message, status = null) {
+    if (!systemUpdateStatus) {
+        return;
+    }
+    systemUpdateStatus.textContent = message || '';
+    systemUpdateStatus.classList.remove('success', 'error');
+    if (status === 'success' || status === 'error') {
+        systemUpdateStatus.classList.add(status);
+    }
+}
+
+function formatUpdateLogEntry(entry) {
+    if (!entry) {
+        return '';
+    }
+    if (typeof entry === 'string') {
+        return entry;
+    }
+    const label = entry.label ? String(entry.label) : '';
+    const command = entry.command ? String(entry.command) : '';
+    const exitCode = typeof entry.exit_code === 'number' ? entry.exit_code : null;
+    const output = entry.output ? String(entry.output) : '';
+
+    const headerParts = [];
+    if (label) {
+        headerParts.push(label);
+    }
+    if (command) {
+        headerParts.push(`(${command})`);
+    }
+    if (exitCode !== null && Number.isFinite(exitCode)) {
+        headerParts.push(`[Exit ${exitCode}]`);
+    }
+
+    const header = headerParts.join(' ').trim();
+    if (output) {
+        return header ? `${header}\n${output}` : output;
+    }
+    return header;
 }
 
 function requireToken() {
@@ -3086,6 +3144,90 @@ if (invoiceStorageClearButton) {
             showMessage('Storage-Box-Zugangsdaten entfernt.', 'success');
         } catch (error) {
             showMessage(error.message, 'error');
+        }
+    });
+}
+
+if (systemUpdateForm && systemUpdateTokenInput) {
+    systemUpdateForm.addEventListener('submit', async (event) => {
+        event.preventDefault();
+
+        const token = systemUpdateTokenInput.value.trim();
+        if (!token) {
+            const message = 'Bitte geben Sie einen gültigen Update-Token ein.';
+            showMessage(message, 'error');
+            setSystemUpdateStatus(message, 'error');
+            return;
+        }
+
+        const submitButton = systemUpdateForm.querySelector('button[type="submit"]');
+        if (submitButton) {
+            submitButton.disabled = true;
+        }
+
+        setSystemUpdateStatus('Update wird gestartet...');
+        if (systemUpdateLog) {
+            systemUpdateLog.textContent = '';
+            systemUpdateLog.classList.add('hidden');
+        }
+
+        try {
+            localStorage.setItem(UPDATE_TOKEN_STORAGE_KEY, token);
+        } catch (error) {
+            // ignore storage access issues
+        }
+
+        try {
+            const response = await fetch(`${UPDATE_ENDPOINT}?token=${encodeURIComponent(token)}`);
+            let payload = null;
+            try {
+                payload = await response.json();
+            } catch (parseError) {
+                // ignore
+            }
+
+            const success = response.ok && payload && payload.success === true;
+            const message = payload && payload.message
+                ? payload.message
+                : success
+                    ? 'Update abgeschlossen.'
+                    : `Update fehlgeschlagen (${response.status} ${response.statusText})`;
+
+            if (success) {
+                showMessage(message, 'success', 6000);
+                setSystemUpdateStatus(message, 'success');
+            } else {
+                showMessage(message, 'error', 6000);
+                setSystemUpdateStatus(message, 'error');
+            }
+
+            if (systemUpdateLog) {
+                if (payload && Array.isArray(payload.log) && payload.log.length > 0) {
+                    const entries = payload.log
+                        .map((entry) => formatUpdateLogEntry(entry))
+                        .filter((line) => line && line.trim().length > 0);
+                    if (entries.length > 0) {
+                        systemUpdateLog.textContent = entries.join('\n\n');
+                        systemUpdateLog.classList.remove('hidden');
+                    } else if (!success) {
+                        systemUpdateLog.textContent = 'Es wurden keine Protokolle zurückgegeben.';
+                        systemUpdateLog.classList.remove('hidden');
+                    }
+                } else if (!success) {
+                    systemUpdateLog.textContent = 'Es wurden keine Protokolle zurückgegeben.';
+                    systemUpdateLog.classList.remove('hidden');
+                }
+            }
+        } catch (error) {
+            const message = error && error.message
+                ? `Update fehlgeschlagen: ${error.message}`
+                : 'Update fehlgeschlagen.';
+            showMessage(message, 'error', 6000);
+            setSystemUpdateStatus(message, 'error');
+        } finally {
+            if (submitButton) {
+                submitButton.disabled = false;
+            }
         }
     });
 }

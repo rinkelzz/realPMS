@@ -683,6 +683,20 @@
                 </div>
             </form>
         </div>
+        <div class="panel">
+            <h3>System-Update</h3>
+            <p class="muted">Starten Sie das bereitgestellte Update-Skript mit Ihrem geheimen Token.</p>
+            <form id="system-update-form" class="stacked-form">
+                <label>Update-Token
+                    <input type="password" id="system-update-token" name="token" autocomplete="off" placeholder="Geheimes Token" required>
+                </label>
+                <div class="form-actions">
+                    <button type="submit">Update ausführen</button>
+                </div>
+            </form>
+            <p id="system-update-status" class="small-text muted"></p>
+            <pre id="system-update-log" class="small-text hidden"></pre>
+        </div>
     </section>
 
     <section id="guest-portal" data-section>

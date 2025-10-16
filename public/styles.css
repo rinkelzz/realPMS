@@ -628,6 +628,27 @@ button.status-action:disabled:hover {
     color: var(--muted);
 }
 
+#system-update-status.success {
+    color: #15803d;
+}
+
+#system-update-status.error {
+    color: #b91c1c;
+}
+
+#system-update-log {
+    margin-top: .75rem;
+    padding: .75rem 1rem;
+    border: 1px solid var(--border);
+    border-radius: .75rem;
+    background: var(--surface-alt);
+    white-space: pre-wrap;
+    overflow: auto;
+    max-height: 18rem;
+    font-family: "SFMono-Regular", "Menlo", "Monaco", "Consolas", "Liberation Mono", "Courier New", monospace;
+    line-height: 1.4;
+}
+
 .checkbox-inline {
     display: flex;
     flex-direction: row;
