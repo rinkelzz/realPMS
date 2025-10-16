@@ -77,6 +77,8 @@ try {
     // ignore storage access issues
 }
 
+const systemUpdateTokenInput = document.getElementById('system-update-token');
+
 if (systemUpdateTokenInput) {
     try {
         const storedUpdateToken = localStorage.getItem(UPDATE_TOKEN_STORAGE_KEY);
@@ -168,7 +170,6 @@ const invoiceStoragePasswordNote = document.getElementById('invoice-storage-pass
 const invoiceStorageStatus = document.getElementById('invoice-storage-status');
 const invoiceStorageClearButton = document.getElementById('invoice-storage-clear');
 const systemUpdateForm = document.getElementById('system-update-form');
-const systemUpdateTokenInput = document.getElementById('system-update-token');
 const systemUpdateLog = document.getElementById('system-update-log');
 const systemUpdateStatus = document.getElementById('system-update-status');
 
