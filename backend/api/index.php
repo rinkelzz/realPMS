@@ -122,6 +122,9 @@ switch ($resource) {
     case 'invoices':
         handleInvoices($method, $segments);
         break;
+    case 'invoice-carts':
+        handleInvoiceCarts($method, $segments);
+        break;
     case 'payments':
         handlePayments($method, $segments);
         break;
@@ -1752,6 +1755,11 @@ function handleInvoices(string $method, array $segments): void
         return;
     }
 
+    if ($method === 'POST' && $id !== null && $action === 'close') {
+        closeInvoice((int) $id);
+        return;
+    }
+
     if ($method === 'GET') {
         if ($id !== null) {
             $invoice = getInvoiceWithRelations((int) $id);
@@ -1771,6 +1779,7 @@ function handleInvoices(string $method, array $segments): void
             jsonResponse(['error' => 'reservation_id is required.'], 422);
         }
 
+        $reservationId = (int) $data['reservation_id'];
         $invoiceNumber = $data['invoice_number'] ?? generateInvoiceNumber();
         $issueDate = $data['issue_date'] ?? date('Y-m-d');
         $dueDate = $data['due_date'] ?? null;
@@ -1787,23 +1796,57 @@ function handleInvoices(string $method, array $segments): void
             if (!$parentInvoiceId) {
                 jsonResponse(['error' => 'parent_invoice_id is required for corrections.'], 422);
             }
+
+            $parentInvoice = fetchInvoiceRow($parentInvoiceId);
+            if (!$parentInvoice) {
+                jsonResponse(['error' => 'Ausgangsrechnung wurde nicht gefunden.'], 404);
+            }
+            if ((int) $parentInvoice['reservation_id'] !== $reservationId) {
+                jsonResponse(['error' => 'Die angegebene parent_invoice_id gehört nicht zu dieser Reservierung.'], 422);
+            }
+            if (empty($parentInvoice['closed_at'])) {
+                jsonResponse(['error' => 'Die Ursprungrechnung muss vor einer Korrektur abgeschlossen werden.'], 422);
+            }
+
             $correctionNumber = $data['correction_number'] ?? generateInvoiceCorrectionNumber();
         }
 
         $items = [];
+        $cartItemIds = [];
         if (!empty($data['items']) && is_array($data['items'])) {
             $items = $data['items'];
         } else {
             $includeArticles = !isset($data['include_articles']) || filter_var($data['include_articles'], FILTER_VALIDATE_BOOLEAN);
-            try {
-                if ($type === 'correction' && $parentInvoiceId) {
-                    $items = buildCorrectionItemsFromInvoice($parentInvoiceId);
+            if ($type !== 'correction') {
+                try {
+                    if (!empty($data['cart_item_ids']) && is_array($data['cart_item_ids'])) {
+                        $cartResult = collectCartItemsForInvoice($pdo, $reservationId, $data['cart_item_ids']);
+                        $items = $cartResult['items'];
+                        $cartItemIds = $cartResult['ids'];
+                    }
+                    if (!$items) {
+                        $cartResult = collectCartItemsForInvoice($pdo, $reservationId);
+                        if ($cartResult['items']) {
+                            $items = $cartResult['items'];
+                            $cartItemIds = $cartResult['ids'];
+                        }
+                    }
+                } catch (InvalidArgumentException $exception) {
+                    jsonResponse(['error' => $exception->getMessage()], 422);
                 }
-                if (!$items) {
-                    $items = buildInvoiceItemsForReservation((int) $data['reservation_id'], $includeArticles);
+            }
+
+            if (!$items) {
+                try {
+                    if ($type === 'correction' && $parentInvoiceId) {
+                        $items = buildCorrectionItemsFromInvoice($parentInvoiceId);
+                    }
+                    if (!$items) {
+                        $items = buildInvoiceItemsForReservation($reservationId, $includeArticles);
+                    }
+                } catch (Throwable $exception) {
+                    jsonResponse(['error' => $exception->getMessage()], 422);
                 }
-            } catch (Throwable $exception) {
-                jsonResponse(['error' => $exception->getMessage()], 422);
             }
         }
 
@@ -1813,24 +1856,36 @@ function handleInvoices(string $method, array $segments): void
 
         $totals = calculateInvoiceTotals($items);
 
-        $stmt = $pdo->prepare('INSERT INTO invoices (reservation_id, invoice_number, correction_number, type, parent_invoice_id, issue_date, due_date, total_amount, tax_amount, status, created_at, updated_at) VALUES (:reservation_id, :invoice_number, :correction_number, :type, :parent_invoice_id, :issue_date, :due_date, :total_amount, :tax_amount, :status, :created_at, :updated_at)');
-        $stmt->execute([
-            'reservation_id' => $data['reservation_id'],
-            'invoice_number' => $invoiceNumber,
-            'correction_number' => $correctionNumber,
-            'type' => $type,
-            'parent_invoice_id' => $parentInvoiceId,
-            'issue_date' => $issueDate,
-            'due_date' => $dueDate,
-            'total_amount' => $totals['total'],
-            'tax_amount' => $totals['tax'],
-            'status' => $status,
-            'created_at' => now(),
-            'updated_at' => now(),
-        ]);
+        $pdo->beginTransaction();
+        try {
+            $stmt = $pdo->prepare('INSERT INTO invoices (reservation_id, invoice_number, correction_number, type, parent_invoice_id, issue_date, due_date, total_amount, tax_amount, status, created_at, updated_at) VALUES (:reservation_id, :invoice_number, :correction_number, :type, :parent_invoice_id, :issue_date, :due_date, :total_amount, :tax_amount, :status, :created_at, :updated_at)');
+            $stmt->execute([
+                'reservation_id' => $reservationId,
+                'invoice_number' => $invoiceNumber,
+                'correction_number' => $correctionNumber,
+                'type' => $type,
+                'parent_invoice_id' => $parentInvoiceId,
+                'issue_date' => $issueDate,
+                'due_date' => $dueDate,
+                'total_amount' => $totals['total'],
+                'tax_amount' => $totals['tax'],
+                'status' => $status,
+                'created_at' => now(),
+                'updated_at' => now(),
+            ]);
 
-        $invoiceId = (int) $pdo->lastInsertId();
-        storeInvoiceItems($invoiceId, $items);
+            $invoiceId = (int) $pdo->lastInsertId();
+            storeInvoiceItems($invoiceId, $items);
+            if ($cartItemIds) {
+                markInvoiceCartItemsInvoiced($pdo, $cartItemIds, $invoiceId);
+            }
+
+            $pdo->commit();
+        } catch (Throwable $exception) {
+            $pdo->rollBack();
+            $statusCode = $exception instanceof InvalidArgumentException ? 422 : 500;
+            jsonResponse(['error' => $exception->getMessage()], $statusCode);
+        }
 
         jsonResponse([
             'id' => $invoiceId,
@@ -1838,6 +1893,93 @@ function handleInvoices(string $method, array $segments): void
             'correction_number' => $correctionNumber,
             'type' => $type,
         ], 201);
+    }
+
+    jsonResponse(['error' => 'Unsupported method.'], 405);
+}
+
+function closeInvoice(int $invoiceId): void
+{
+    $pdo = db();
+    $stmt = $pdo->prepare('SELECT id, closed_at FROM invoices WHERE id = :id');
+    $stmt->execute(['id' => $invoiceId]);
+    $invoice = $stmt->fetch();
+    if (!$invoice) {
+        jsonResponse(['error' => 'Invoice not found.'], 404);
+    }
+    if (!empty($invoice['closed_at'])) {
+        jsonResponse(['error' => 'Diese Rechnung wurde bereits geschlossen.'], 409);
+    }
+
+    $timestamp = now();
+    $update = $pdo->prepare('UPDATE invoices SET closed_at = :closed_at, updated_at = :updated_at WHERE id = :id');
+    $update->execute([
+        'closed_at' => $timestamp,
+        'updated_at' => $timestamp,
+        'id' => $invoiceId,
+    ]);
+
+    $updatedInvoice = getInvoiceWithRelations($invoiceId);
+    jsonResponse($updatedInvoice ?? ['id' => $invoiceId, 'closed_at' => $timestamp]);
+}
+
+function handleInvoiceCarts(string $method, array $segments): void
+{
+    $pdo = db();
+    $reservationId = isset($segments[1]) ? (int) $segments[1] : 0;
+    if ($reservationId <= 0) {
+        jsonResponse(['error' => 'Reservierungs-ID erforderlich.'], 422);
+    }
+
+    $exists = $pdo->prepare('SELECT id FROM reservations WHERE id = :id');
+    $exists->execute(['id' => $reservationId]);
+    if ($exists->fetchColumn() === false) {
+        jsonResponse(['error' => 'Reservierung wurde nicht gefunden.'], 404);
+    }
+
+    $cart = ensureInvoiceCart($pdo, $reservationId);
+    $itemId = isset($segments[2]) ? (int) $segments[2] : null;
+
+    if ($method === 'GET') {
+        $items = fetchInvoiceCartItemsForCart($pdo, (int) $cart['id']);
+        jsonResponse([
+            'cart' => $cart,
+            'items' => $items,
+        ]);
+    }
+
+    if ($method === 'POST' && $itemId === null) {
+        $data = parseJsonBody();
+        try {
+            $item = createInvoiceCartItem($pdo, (int) $cart['id'], $data);
+            jsonResponse($item, 201);
+        } catch (InvalidArgumentException $exception) {
+            jsonResponse(['error' => $exception->getMessage()], 422);
+        }
+    }
+
+    if ($method === 'PATCH' && $itemId !== null) {
+        $data = parseJsonBody();
+        try {
+            $item = updateInvoiceCartItem($pdo, (int) $cart['id'], $itemId, $data);
+            jsonResponse($item);
+        } catch (InvalidArgumentException $exception) {
+            jsonResponse(['error' => $exception->getMessage()], 422);
+        }
+    }
+
+    if ($method === 'DELETE') {
+        if ($itemId !== null) {
+            try {
+                deleteInvoiceCartItem($pdo, (int) $cart['id'], $itemId);
+            } catch (InvalidArgumentException $exception) {
+                jsonResponse(['error' => $exception->getMessage()], 422);
+            }
+            jsonResponse(['deleted' => true]);
+        }
+
+        clearInvoiceCart($pdo, (int) $cart['id']);
+        jsonResponse(['deleted' => true]);
     }
 
     jsonResponse(['error' => 'Unsupported method.'], 405);
@@ -1851,6 +1993,15 @@ function fetchInvoiceItems(int $invoiceId): array
     return $stmt->fetchAll();
 }
 
+function calculateInvoiceLineTotal(float $quantity, float $unitPrice, ?float $taxRate): float
+{
+    $rate = $taxRate !== null ? (float) $taxRate : 0.0;
+    $subtotal = $quantity * $unitPrice;
+    $total = $subtotal * (1 + ($rate / 100));
+
+    return round($total, 2);
+}
+
 function storeInvoiceItems(int $invoiceId, array $items): void
 {
     $pdo = db();
@@ -1859,10 +2010,13 @@ function storeInvoiceItems(int $invoiceId, array $items): void
         if (empty($item['description'])) {
             throw new InvalidArgumentException('Each invoice item requires a description.');
         }
-        $quantity = (float) ($item['quantity'] ?? 1);
-        $unitPrice = (float) ($item['unit_price'] ?? 0);
+        $quantity = round((float) ($item['quantity'] ?? 1), 2);
+        $unitPrice = round((float) ($item['unit_price'] ?? 0), 2);
         $taxRate = isset($item['tax_rate']) ? (float) $item['tax_rate'] : null;
-        $total = $quantity * $unitPrice * (1 + ($taxRate ?? 0) / 100);
+        if ($taxRate !== null) {
+            $taxRate = round($taxRate, 2);
+        }
+        $total = calculateInvoiceLineTotal($quantity, $unitPrice, $taxRate);
 
         $stmt->execute([
             'invoice_id' => $invoiceId,
@@ -1875,6 +2029,277 @@ function storeInvoiceItems(int $invoiceId, array $items): void
             'updated_at' => now(),
         ]);
     }
+}
+
+function fetchInvoiceRow(int $invoiceId): ?array
+{
+    $pdo = db();
+    $stmt = $pdo->prepare('SELECT * FROM invoices WHERE id = :id');
+    $stmt->execute(['id' => $invoiceId]);
+    $invoice = $stmt->fetch();
+
+    return $invoice !== false ? $invoice : null;
+}
+
+function ensureInvoiceCart(PDO $pdo, int $reservationId): array
+{
+    $stmt = $pdo->prepare('SELECT * FROM invoice_carts WHERE reservation_id = :reservation_id LIMIT 1');
+    $stmt->execute(['reservation_id' => $reservationId]);
+    $cart = $stmt->fetch();
+    if ($cart) {
+        return $cart;
+    }
+
+    $timestamp = now();
+    $insert = $pdo->prepare('INSERT INTO invoice_carts (reservation_id, status, created_at, updated_at) VALUES (:reservation_id, :status, :created_at, :updated_at)');
+    $insert->execute([
+        'reservation_id' => $reservationId,
+        'status' => 'open',
+        'created_at' => $timestamp,
+        'updated_at' => $timestamp,
+    ]);
+
+    $id = (int) $pdo->lastInsertId();
+    return [
+        'id' => $id,
+        'reservation_id' => $reservationId,
+        'status' => 'open',
+        'created_at' => $timestamp,
+        'updated_at' => $timestamp,
+    ];
+}
+
+function fetchInvoiceCartItem(PDO $pdo, int $cartId, int $itemId): ?array
+{
+    $stmt = $pdo->prepare('SELECT * FROM invoice_cart_items WHERE id = :id AND cart_id = :cart_id');
+    $stmt->execute([
+        'id' => $itemId,
+        'cart_id' => $cartId,
+    ]);
+    $row = $stmt->fetch();
+    if (!$row) {
+        return null;
+    }
+
+    return normalizeInvoiceCartRow($row);
+}
+
+function fetchInvoiceCartItemsForCart(PDO $pdo, int $cartId): array
+{
+    $stmt = $pdo->prepare('SELECT * FROM invoice_cart_items WHERE cart_id = :cart_id AND invoiced_at IS NULL ORDER BY created_at, id');
+    $stmt->execute(['cart_id' => $cartId]);
+    $rows = $stmt->fetchAll();
+
+    if (!$rows) {
+        return [];
+    }
+
+    return array_map('normalizeInvoiceCartRow', $rows);
+}
+
+function normalizeInvoiceCartRow(array $row): array
+{
+    return [
+        'id' => (int) $row['id'],
+        'cart_id' => (int) $row['cart_id'],
+        'description' => $row['description'],
+        'quantity' => (float) $row['quantity'],
+        'unit_price' => (float) $row['unit_price'],
+        'tax_rate' => $row['tax_rate'] !== null ? (float) $row['tax_rate'] : null,
+        'total_amount' => isset($row['total_amount']) ? (float) $row['total_amount'] : calculateInvoiceLineTotal((float) $row['quantity'], (float) $row['unit_price'], $row['tax_rate'] !== null ? (float) $row['tax_rate'] : null),
+        'created_at' => $row['created_at'] ?? null,
+        'updated_at' => $row['updated_at'] ?? null,
+        'invoiced_at' => $row['invoiced_at'] ?? null,
+        'invoice_id' => isset($row['invoice_id']) ? (int) $row['invoice_id'] : null,
+    ];
+}
+
+function createInvoiceCartItem(PDO $pdo, int $cartId, array $payload): array
+{
+    $description = isset($payload['description']) ? trim((string) $payload['description']) : '';
+    if ($description === '') {
+        throw new InvalidArgumentException('Bitte eine Beschreibung hinterlegen.');
+    }
+    $quantity = isset($payload['quantity']) ? (float) $payload['quantity'] : 1.0;
+    if ($quantity <= 0) {
+        throw new InvalidArgumentException('Die Menge muss größer als 0 sein.');
+    }
+    $unitPrice = isset($payload['unit_price']) ? (float) $payload['unit_price'] : 0.0;
+    $taxRate = array_key_exists('tax_rate', $payload) && $payload['tax_rate'] !== null ? (float) $payload['tax_rate'] : null;
+    $total = calculateInvoiceLineTotal($quantity, $unitPrice, $taxRate);
+    $timestamp = now();
+
+    $stmt = $pdo->prepare('INSERT INTO invoice_cart_items (cart_id, description, quantity, unit_price, tax_rate, total_amount, created_at, updated_at) VALUES (:cart_id, :description, :quantity, :unit_price, :tax_rate, :total_amount, :created_at, :updated_at)');
+    $stmt->execute([
+        'cart_id' => $cartId,
+        'description' => $description,
+        'quantity' => round($quantity, 2),
+        'unit_price' => round($unitPrice, 2),
+        'tax_rate' => $taxRate !== null ? round($taxRate, 2) : null,
+        'total_amount' => $total,
+        'created_at' => $timestamp,
+        'updated_at' => $timestamp,
+    ]);
+
+    $itemId = (int) $pdo->lastInsertId();
+    $item = fetchInvoiceCartItem($pdo, $cartId, $itemId);
+    if (!$item) {
+        throw new RuntimeException('Warenkorbposition konnte nicht geladen werden.');
+    }
+
+    return $item;
+}
+
+function updateInvoiceCartItem(PDO $pdo, int $cartId, int $itemId, array $payload): array
+{
+    $existing = fetchInvoiceCartItem($pdo, $cartId, $itemId);
+    if (!$existing) {
+        throw new InvalidArgumentException('Warenkorbposition wurde nicht gefunden.');
+    }
+    if (!empty($existing['invoiced_at'])) {
+        throw new InvalidArgumentException('Diese Warenkorbposition wurde bereits einer Rechnung zugeordnet.');
+    }
+
+    $description = array_key_exists('description', $payload) ? trim((string) $payload['description']) : $existing['description'];
+    if ($description === '') {
+        throw new InvalidArgumentException('Bitte eine Beschreibung hinterlegen.');
+    }
+    $quantity = array_key_exists('quantity', $payload) ? (float) $payload['quantity'] : (float) $existing['quantity'];
+    if ($quantity <= 0) {
+        throw new InvalidArgumentException('Die Menge muss größer als 0 sein.');
+    }
+    $unitPrice = array_key_exists('unit_price', $payload) ? (float) $payload['unit_price'] : (float) $existing['unit_price'];
+    $taxRate = array_key_exists('tax_rate', $payload)
+        ? ($payload['tax_rate'] !== null ? (float) $payload['tax_rate'] : null)
+        : ($existing['tax_rate'] !== null ? (float) $existing['tax_rate'] : null);
+
+    $total = calculateInvoiceLineTotal($quantity, $unitPrice, $taxRate);
+    $timestamp = now();
+
+    $stmt = $pdo->prepare('UPDATE invoice_cart_items SET description = :description, quantity = :quantity, unit_price = :unit_price, tax_rate = :tax_rate, total_amount = :total_amount, updated_at = :updated_at WHERE id = :id AND cart_id = :cart_id');
+    $stmt->execute([
+        'description' => $description,
+        'quantity' => round($quantity, 2),
+        'unit_price' => round($unitPrice, 2),
+        'tax_rate' => $taxRate !== null ? round($taxRate, 2) : null,
+        'total_amount' => $total,
+        'updated_at' => $timestamp,
+        'id' => $itemId,
+        'cart_id' => $cartId,
+    ]);
+
+    $updated = fetchInvoiceCartItem($pdo, $cartId, $itemId);
+    if (!$updated) {
+        throw new RuntimeException('Aktualisierte Warenkorbposition konnte nicht geladen werden.');
+    }
+
+    return $updated;
+}
+
+function deleteInvoiceCartItem(PDO $pdo, int $cartId, int $itemId): void
+{
+    $item = fetchInvoiceCartItem($pdo, $cartId, $itemId);
+    if (!$item) {
+        throw new InvalidArgumentException('Warenkorbposition wurde nicht gefunden.');
+    }
+    if (!empty($item['invoiced_at'])) {
+        throw new InvalidArgumentException('Diese Warenkorbposition wurde bereits einer Rechnung zugeordnet.');
+    }
+
+    $stmt = $pdo->prepare('DELETE FROM invoice_cart_items WHERE id = :id AND cart_id = :cart_id');
+    $stmt->execute([
+        'id' => $itemId,
+        'cart_id' => $cartId,
+    ]);
+}
+
+function clearInvoiceCart(PDO $pdo, int $cartId): void
+{
+    $stmt = $pdo->prepare('DELETE FROM invoice_cart_items WHERE cart_id = :cart_id AND invoiced_at IS NULL');
+    $stmt->execute(['cart_id' => $cartId]);
+}
+
+function normalizeIdList(array $values): array
+{
+    $ids = [];
+    foreach ($values as $value) {
+        $id = (int) $value;
+        if ($id > 0) {
+            $ids[$id] = $id;
+        }
+    }
+
+    return array_values($ids);
+}
+
+function collectCartItemsForInvoice(PDO $pdo, int $reservationId, array $requestedIds = []): array
+{
+    $cart = ensureInvoiceCart($pdo, $reservationId);
+    $cartId = (int) $cart['id'];
+    $ids = normalizeIdList($requestedIds);
+
+    if ($ids) {
+        $placeholders = [];
+        $params = ['cart_id' => $cartId];
+        foreach ($ids as $index => $value) {
+            $placeholder = ':id' . $index;
+            $placeholders[] = $placeholder;
+            $params[substr($placeholder, 1)] = $value;
+        }
+        $sql = sprintf(
+            'SELECT * FROM invoice_cart_items WHERE cart_id = :cart_id AND invoiced_at IS NULL AND id IN (%s)',
+            implode(',', $placeholders)
+        );
+        $stmt = $pdo->prepare($sql);
+        $stmt->execute($params);
+        $rows = $stmt->fetchAll();
+        if (count($rows) !== count($ids)) {
+            throw new InvalidArgumentException('Die ausgewählten Warenkorbpositionen stehen nicht mehr zur Verfügung.');
+        }
+    } else {
+        $stmt = $pdo->prepare('SELECT * FROM invoice_cart_items WHERE cart_id = :cart_id AND invoiced_at IS NULL ORDER BY created_at, id');
+        $stmt->execute(['cart_id' => $cartId]);
+        $rows = $stmt->fetchAll();
+        $ids = array_map(static fn ($row) => (int) $row['id'], $rows);
+    }
+
+    $items = array_map('normalizeInvoiceCartRow', $rows);
+    $prepared = array_map(static function (array $item): array {
+        return [
+            'description' => $item['description'],
+            'quantity' => (float) $item['quantity'],
+            'unit_price' => (float) $item['unit_price'],
+            'tax_rate' => $item['tax_rate'],
+        ];
+    }, $items);
+
+    return ['items' => $prepared, 'ids' => $ids];
+}
+
+function markInvoiceCartItemsInvoiced(PDO $pdo, array $itemIds, int $invoiceId): void
+{
+    $ids = normalizeIdList($itemIds);
+    if (!$ids) {
+        return;
+    }
+
+    $placeholders = [];
+    $params = [
+        'invoice_id' => $invoiceId,
+        'timestamp' => now(),
+    ];
+    foreach ($ids as $index => $value) {
+        $placeholder = ':id' . $index;
+        $placeholders[] = $placeholder;
+        $params[substr($placeholder, 1)] = $value;
+    }
+
+    $sql = sprintf(
+        'UPDATE invoice_cart_items SET invoiced_at = :timestamp, invoice_id = :invoice_id, updated_at = :timestamp WHERE id IN (%s)',
+        implode(',', $placeholders)
+    );
+    $stmt = $pdo->prepare($sql);
+    $stmt->execute($params);
 }
 
 function buildCorrectionItemsFromInvoice(int $invoiceId): array
@@ -1993,7 +2418,35 @@ function createReservationInvoice(int $reservationId, array $payload = []): arra
     }
 
     $includeArticles = !isset($payload['include_articles']) || filter_var($payload['include_articles'], FILTER_VALIDATE_BOOLEAN);
-    $items = buildInvoiceItemsForReservation($reservationId, $includeArticles);
+    $items = [];
+    $cartItemIds = [];
+
+    if (!empty($payload['cart_item_ids']) && is_array($payload['cart_item_ids'])) {
+        try {
+            $cartResult = collectCartItemsForInvoice($pdo, $reservationId, $payload['cart_item_ids']);
+            $items = $cartResult['items'];
+            $cartItemIds = $cartResult['ids'];
+        } catch (InvalidArgumentException $exception) {
+            throw $exception;
+        }
+    }
+
+    if (!$items) {
+        try {
+            $cartResult = collectCartItemsForInvoice($pdo, $reservationId);
+            if ($cartResult['items']) {
+                $items = $cartResult['items'];
+                $cartItemIds = $cartResult['ids'];
+            }
+        } catch (InvalidArgumentException $exception) {
+            throw $exception;
+        }
+    }
+
+    if (!$items) {
+        $items = buildInvoiceItemsForReservation($reservationId, $includeArticles);
+    }
+
     if (!$items) {
         throw new InvalidArgumentException('Für diese Reservierung sind keine abrechenbaren Posten hinterlegt.');
     }
@@ -2025,6 +2478,9 @@ function createReservationInvoice(int $reservationId, array $payload = []): arra
 
         $invoiceId = (int) $pdo->lastInsertId();
         storeInvoiceItems($invoiceId, $items);
+        if ($cartItemIds) {
+            markInvoiceCartItemsInvoiced($pdo, $cartItemIds, $invoiceId);
+        }
 
         $pdo->commit();
 

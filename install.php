@@ -127,6 +127,13 @@ try {
     } else {
         $results[] = '• Foreign key `fk_invoices_parent` already present';
     }
+
+    if (!columnExists($pdo, 'invoices', 'closed_at')) {
+        $pdo->exec("ALTER TABLE invoices ADD COLUMN closed_at DATETIME NULL AFTER status");
+        $results[] = '✓ Added column `closed_at` to `invoices`';
+    } else {
+        $results[] = '• Column `closed_at` already present on `invoices`';
+    }
 } catch (PDOException $exception) {
     respond('Error updating invoice metadata columns: ' . $exception->getMessage(), true, $results);
 }
@@ -468,14 +475,19 @@ function getSchemaStatements(): array
                 id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
                 reservation_id BIGINT UNSIGNED NOT NULL,
                 invoice_number VARCHAR(100) NOT NULL UNIQUE,
+                correction_number VARCHAR(100) NULL UNIQUE,
+                type ENUM('invoice','correction') NOT NULL DEFAULT 'invoice',
+                parent_invoice_id BIGINT UNSIGNED NULL,
                 issue_date DATE NOT NULL,
                 due_date DATE NULL,
                 total_amount DECIMAL(10,2) NOT NULL,
                 tax_amount DECIMAL(10,2) NULL,
                 status ENUM('draft','issued','paid','void') NOT NULL DEFAULT 'draft',
+                closed_at DATETIME NULL,
                 created_at TIMESTAMP NULL,
                 updated_at TIMESTAMP NULL,
-                CONSTRAINT fk_invoices_reservation FOREIGN KEY (reservation_id) REFERENCES reservations(id)
+                CONSTRAINT fk_invoices_reservation FOREIGN KEY (reservation_id) REFERENCES reservations(id),
+                CONSTRAINT fk_invoices_parent FOREIGN KEY (parent_invoice_id) REFERENCES invoices(id) ON DELETE SET NULL
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
         SQL,
         'payments' => <<<'SQL'
@@ -521,6 +533,33 @@ function getSchemaStatements(): array
                 created_at TIMESTAMP NULL,
                 updated_at TIMESTAMP NULL,
                 CONSTRAINT fk_invoice_items_invoice FOREIGN KEY (invoice_id) REFERENCES invoices(id) ON DELETE CASCADE
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+        SQL,
+        'invoice_carts' => <<<'SQL'
+            CREATE TABLE IF NOT EXISTS invoice_carts (
+                id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+                reservation_id BIGINT UNSIGNED NOT NULL,
+                status ENUM('open','locked') NOT NULL DEFAULT 'open',
+                created_at TIMESTAMP NULL,
+                updated_at TIMESTAMP NULL,
+                CONSTRAINT fk_invoice_carts_reservation FOREIGN KEY (reservation_id) REFERENCES reservations(id) ON DELETE CASCADE
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+        SQL,
+        'invoice_cart_items' => <<<'SQL'
+            CREATE TABLE IF NOT EXISTS invoice_cart_items (
+                id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+                cart_id BIGINT UNSIGNED NOT NULL,
+                description VARCHAR(255) NOT NULL,
+                quantity DECIMAL(10,2) NOT NULL DEFAULT 1,
+                unit_price DECIMAL(10,2) NOT NULL DEFAULT 0,
+                tax_rate DECIMAL(5,2) NULL,
+                total_amount DECIMAL(10,2) NOT NULL DEFAULT 0,
+                invoiced_at TIMESTAMP NULL,
+                invoice_id BIGINT UNSIGNED NULL,
+                created_at TIMESTAMP NULL,
+                updated_at TIMESTAMP NULL,
+                CONSTRAINT fk_invoice_cart_items_cart FOREIGN KEY (cart_id) REFERENCES invoice_carts(id) ON DELETE CASCADE,
+                CONSTRAINT fk_invoice_cart_items_invoice FOREIGN KEY (invoice_id) REFERENCES invoices(id) ON DELETE SET NULL
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
         SQL,
         'reservation_documents' => <<<'SQL'

@@ -56,7 +56,11 @@ const state = {
     calendarColorsLoaded: false,
     invoiceLogoDataUrl: null,
     currentReservationInvoices: [],
+    currentReservationCartItems: [],
+    currentReservationCurrency: 'EUR',
     invoiceStorageSettings: { ...DEFAULT_INVOICE_STORAGE_SETTINGS },
+    guestLookupResults: [],
+    guestLookupTerm: '',
 };
 
 const CALENDAR_DAYS = 14;
@@ -89,11 +93,31 @@ const reservationInvoiceStatus = document.getElementById('reservation-invoice-st
 const reservationInvoiceLink = document.getElementById('reservation-invoice-link');
 const reservationCreateInvoiceButton = document.getElementById('reservation-create-invoice');
 const reservationPayInvoiceButton = document.getElementById('reservation-pay-invoice');
+const reservationCloseInvoiceButton = document.getElementById('reservation-close-invoice');
+const reservationCartList = document.getElementById('reservation-cart-items');
+const reservationCartForm = document.getElementById('reservation-cart-form');
+const reservationCartAddButton = document.getElementById('reservation-cart-add');
+const reservationCartRefreshButton = document.getElementById('reservation-cart-refresh');
+const reservationCartCancelButton = document.getElementById('reservation-cart-cancel');
+const reservationCartTotal = document.getElementById('reservation-cart-total');
 const reservationsList = document.getElementById('reservations-list');
 const reservationCapacityEl = document.getElementById('reservation-capacity');
+const reservationCheckInInput = reservationForm ? reservationForm.querySelector('input[name="check_in"]') : null;
+const reservationCheckOutInput = reservationForm ? reservationForm.querySelector('input[name="check_out"]') : null;
+const reservationAdultsInput = reservationForm ? reservationForm.querySelector('input[name="adults"]') : null;
+const reservationChildrenInput = reservationForm ? reservationForm.querySelector('input[name="children"]') : null;
+const reservationTotalAmountInput = reservationForm ? reservationForm.querySelector('input[name="total_amount"]') : null;
+const reservationCurrencyInput = reservationForm ? reservationForm.querySelector('input[name="currency"]') : null;
+const reservationStatusSelect = reservationForm ? reservationForm.querySelector('select[name="status"]') : null;
+const reservationBookedViaInput = reservationForm ? reservationForm.querySelector('input[name="booked_via"]') : null;
+const reservationRatePlanSelect = reservationForm ? reservationForm.querySelector('select[name="rate_plan"]') : null;
 const reservationRoomsSelect = reservationForm ? reservationForm.querySelector('select[name="rooms"]') : null;
 const guestSearchInput = reservationForm ? reservationForm.querySelector('input[name="guest_search"]') : null;
 const guestIdInput = reservationForm ? reservationForm.querySelector('input[name="guest_id"]') : null;
+const reservationGuestFirstInput = reservationForm ? reservationForm.querySelector('input[name="guest_first"]') : null;
+const reservationGuestLastInput = reservationForm ? reservationForm.querySelector('input[name="guest_last"]') : null;
+const reservationGuestEmailInput = reservationForm ? reservationForm.querySelector('input[name="guest_email"]') : null;
+const reservationGuestPhoneInput = reservationForm ? reservationForm.querySelector('input[name="guest_phone"]') : null;
 const guestSearchResults = document.getElementById('guest-search-results');
 const guestClearSelectionButton = document.getElementById('guest-clear-selection');
 const reservationGuestCompanySelect = reservationForm ? reservationForm.querySelector('select[name="guest_company"]') : null;
@@ -133,6 +157,20 @@ const invoiceStorageClearButton = document.getElementById('invoice-storage-clear
 
 let guestLookupDebounceId = null;
 let guestLookupRequestId = 0;
+
+function getReservationRatePlanSelect() {
+    if (!reservationForm) {
+        return null;
+    }
+    return reservationRatePlanSelect || reservationForm.querySelector('select[name="rate_plan"]');
+}
+
+function getReservationRoomsSelect() {
+    if (!reservationForm) {
+        return null;
+    }
+    return reservationRoomsSelect || reservationForm.querySelector('select[name="rooms"]');
+}
 
 const RESERVATION_STATUS_LABELS = {
     tentative: 'Voranfrage',
@@ -391,9 +429,21 @@ if (reservationCreateInvoiceButton) {
         if (!requireToken()) {
             return;
         }
+        const selectedCartItems = reservationCartList
+            ? Array.from(reservationCartList.querySelectorAll('input[type="checkbox"][data-item-id]:checked'))
+                .map((input) => Number(input.dataset.itemId))
+                .filter((id) => id > 0)
+            : [];
+        const payload = {};
+        if (selectedCartItems.length > 0) {
+            payload.cart_item_ids = selectedCartItems;
+        }
         reservationCreateInvoiceButton.disabled = true;
         try {
-            const invoice = await apiFetch(`reservations/${state.editingReservationId}/invoice`, { method: 'POST' });
+            const invoice = await apiFetch(`reservations/${state.editingReservationId}/invoice`, {
+                method: 'POST',
+                body: JSON.stringify(payload),
+            });
             const number = invoice?.invoice_number || invoice?.id || '';
             showMessage(number ? `Rechnung ${number} erstellt.` : 'Rechnung erstellt.', 'success');
             await Promise.all([
@@ -402,8 +452,9 @@ if (reservationCreateInvoiceButton) {
             ]);
             await startReservationEdit(state.editingReservationId);
         } catch (error) {
-            reservationCreateInvoiceButton.disabled = false;
             showMessage(error.message, 'error');
+        } finally {
+            reservationCreateInvoiceButton.disabled = false;
         }
     });
 }
@@ -440,6 +491,144 @@ if (reservationPayInvoiceButton) {
             reservationPayInvoiceButton.disabled = false;
             showMessage(error.message, 'error');
         }
+    });
+}
+
+if (reservationCloseInvoiceButton) {
+    reservationCloseInvoiceButton.addEventListener('click', async () => {
+        if (!state.editingReservationId) {
+            showMessage('Bitte wählen Sie zuerst eine Reservierung aus.', 'error');
+            return;
+        }
+        if (!requireToken()) {
+            return;
+        }
+        const latestInvoice = state.currentReservationInvoices[0];
+        if (!latestInvoice) {
+            showMessage('Für diese Reservierung existiert noch keine Rechnung.', 'error');
+            return;
+        }
+        if (latestInvoice.closed_at) {
+            showMessage('Diese Rechnung wurde bereits abgeschlossen.', 'info');
+            return;
+        }
+        reservationCloseInvoiceButton.disabled = true;
+        try {
+            await apiFetch(`invoices/${latestInvoice.id}/close`, { method: 'POST' });
+            showMessage('Rechnung abgeschlossen.', 'success');
+            await Promise.all([
+                loadReservations(true),
+                loadBilling(true),
+            ]);
+            await startReservationEdit(state.editingReservationId);
+        } catch (error) {
+            reservationCloseInvoiceButton.disabled = false;
+            showMessage(error.message, 'error');
+        }
+    });
+}
+
+if (reservationCartAddButton) {
+    reservationCartAddButton.addEventListener('click', () => {
+        if (!state.editingReservationId) {
+            showMessage('Bitte wählen Sie zuerst eine Reservierung aus.', 'error');
+            return;
+        }
+        resetReservationCartForm();
+        if (reservationCartForm) {
+            reservationCartForm.classList.remove('hidden');
+            const descriptionField = reservationCartForm.querySelector('input[name="description"]');
+            if (descriptionField) {
+                descriptionField.focus();
+            }
+        }
+    });
+}
+
+if (reservationCartCancelButton) {
+    reservationCartCancelButton.addEventListener('click', () => {
+        hideReservationCartForm();
+    });
+}
+
+if (reservationCartForm) {
+    reservationCartForm.addEventListener('submit', async (event) => {
+        event.preventDefault();
+        if (!state.editingReservationId) {
+            showMessage('Bitte wählen Sie zuerst eine Reservierung aus.', 'error');
+            return;
+        }
+        if (!requireToken()) {
+            return;
+        }
+        const form = event.target;
+        const payload = {
+            description: form.description.value.trim(),
+            quantity: Number(form.quantity.value || 1),
+            unit_price: Number(form.unit_price.value || 0),
+            tax_rate: form.tax_rate.value === '' ? null : Number(form.tax_rate.value),
+        };
+        if (!payload.description) {
+            showMessage('Bitte eine Beschreibung hinterlegen.', 'error');
+            return;
+        }
+        if (!Number.isFinite(payload.quantity) || payload.quantity <= 0) {
+            showMessage('Die Menge muss größer als 0 sein.', 'error');
+            return;
+        }
+        try {
+            await apiFetch(`invoice-carts/${state.editingReservationId}`, {
+                method: 'POST',
+                body: JSON.stringify(payload),
+            });
+            showMessage('Position zum Warenkorb hinzugefügt.', 'success');
+            hideReservationCartForm();
+            await loadReservationCart(state.editingReservationId);
+        } catch (error) {
+            showMessage(error.message, 'error');
+        }
+    });
+}
+
+if (reservationCartList) {
+    reservationCartList.addEventListener('click', async (event) => {
+        const button = event.target instanceof Element ? event.target.closest('button[data-item-id]') : null;
+        if (!button) {
+            return;
+        }
+        const itemId = Number(button.dataset.itemId);
+        if (!itemId) {
+            return;
+        }
+        if (!state.editingReservationId) {
+            showMessage('Bitte wählen Sie zuerst eine Reservierung aus.', 'error');
+            return;
+        }
+        if (!requireToken()) {
+            return;
+        }
+        button.disabled = true;
+        try {
+            await apiFetch(`invoice-carts/${state.editingReservationId}/${itemId}`, { method: 'DELETE' });
+            showMessage('Position aus dem Warenkorb entfernt.', 'success');
+            await loadReservationCart(state.editingReservationId);
+        } catch (error) {
+            button.disabled = false;
+            showMessage(error.message, 'error');
+        }
+    });
+}
+
+if (reservationCartRefreshButton) {
+    reservationCartRefreshButton.addEventListener('click', () => {
+        if (!state.editingReservationId) {
+            showMessage('Bitte wählen Sie zuerst eine Reservierung aus.', 'error');
+            return;
+        }
+        if (!requireToken()) {
+            return;
+        }
+        loadReservationCart(state.editingReservationId);
     });
 }
 
@@ -480,6 +669,107 @@ function formatCurrency(amount, currency = 'EUR') {
     return new Intl.NumberFormat('de-DE', { style: 'currency', currency }).format(number);
 }
 
+function resetReservationCartForm() {
+    if (!reservationCartForm) {
+        return;
+    }
+    reservationCartForm.reset();
+    const quantityField = reservationCartForm.querySelector('input[name="quantity"]');
+    const unitPriceField = reservationCartForm.querySelector('input[name="unit_price"]');
+    const taxField = reservationCartForm.querySelector('input[name="tax_rate"]');
+    if (quantityField) {
+        quantityField.value = '1';
+    }
+    if (unitPriceField) {
+        unitPriceField.value = '0';
+    }
+    if (taxField) {
+        taxField.value = '7';
+    }
+}
+
+function hideReservationCartForm() {
+    if (!reservationCartForm) {
+        return;
+    }
+    reservationCartForm.classList.add('hidden');
+    resetReservationCartForm();
+}
+
+function renderReservationCartItems() {
+    if (!reservationCartList) {
+        return;
+    }
+    reservationCartList.innerHTML = '';
+    const items = Array.isArray(state.currentReservationCartItems) ? state.currentReservationCartItems : [];
+    const currency = state.currentReservationCurrency || 'EUR';
+
+    if (items.length === 0) {
+        const empty = document.createElement('li');
+        empty.className = 'meta-list-empty muted small-text';
+        empty.textContent = 'Keine offenen Warenkorbpositionen.';
+        reservationCartList.appendChild(empty);
+        if (reservationCartTotal) {
+            reservationCartTotal.textContent = '';
+        }
+        return;
+    }
+
+    let total = 0;
+    items.forEach((item) => {
+        const lineTotal = item.total_amount !== undefined ? Number(item.total_amount) : (Number(item.quantity) || 0) * (Number(item.unit_price) || 0) * (1 + (Number(item.tax_rate) || 0) / 100);
+        if (!Number.isNaN(lineTotal)) {
+            total += lineTotal;
+        }
+
+        const li = document.createElement('li');
+        const label = document.createElement('label');
+        const checkbox = document.createElement('input');
+        checkbox.type = 'checkbox';
+        checkbox.checked = true;
+        checkbox.dataset.itemId = item.id;
+        label.appendChild(checkbox);
+
+        const description = document.createElement('span');
+        const quantity = Number(item.quantity ?? 0).toFixed(2).replace(/\.00$/, '');
+        const priceText = formatCurrency(item.unit_price ?? 0, currency);
+        const taxText = item.tax_rate !== null && item.tax_rate !== undefined
+            ? ` · MwSt ${Number(item.tax_rate).toFixed(1)}%`
+            : '';
+        description.textContent = `${item.description} · ${quantity} × ${priceText}${taxText}`;
+        label.appendChild(description);
+
+        li.appendChild(label);
+
+        const removeButton = document.createElement('button');
+        removeButton.type = 'button';
+        removeButton.className = 'secondary small';
+        removeButton.dataset.itemId = item.id;
+        removeButton.textContent = 'Entfernen';
+        li.appendChild(removeButton);
+
+        reservationCartList.appendChild(li);
+    });
+
+    if (reservationCartTotal) {
+        reservationCartTotal.textContent = `Gesamtsumme Warenkorb: ${formatCurrency(total, currency)}`;
+    }
+}
+
+async function loadReservationCart(reservationId) {
+    if (!reservationId || !requireToken()) {
+        return;
+    }
+    try {
+        const response = await apiFetch(`invoice-carts/${reservationId}`);
+        const items = Array.isArray(response?.items) ? response.items : [];
+        state.currentReservationCartItems = items;
+        renderReservationCartItems();
+    } catch (error) {
+        showMessage(error.message, 'error');
+    }
+}
+
 function escapeHtml(value) {
     return String(value)
         .replace(/&/g, '&amp;')
@@ -508,6 +798,8 @@ function updateReservationMeta(reservation = null) {
     if (!reservation) {
         reservationMeta.classList.add('hidden');
         state.currentReservationInvoices = [];
+        state.currentReservationCartItems = [];
+        state.currentReservationCurrency = 'EUR';
         if (reservationNumberEl) {
             reservationNumberEl.textContent = '--';
         }
@@ -526,11 +818,20 @@ function updateReservationMeta(reservation = null) {
             reservationPayInvoiceButton.disabled = true;
             reservationPayInvoiceButton.textContent = 'Als bezahlt verbuchen';
         }
+        if (reservationCloseInvoiceButton) {
+            reservationCloseInvoiceButton.disabled = true;
+            reservationCloseInvoiceButton.textContent = 'Rechnung abschließen';
+        }
+        renderReservationCartItems();
+        hideReservationCartForm();
         return;
     }
 
     reservationMeta.classList.remove('hidden');
     state.currentReservationInvoices = Array.isArray(reservation.invoices) ? reservation.invoices : [];
+    state.currentReservationCurrency = reservation.currency || 'EUR';
+    renderReservationCartItems();
+    hideReservationCartForm();
 
     if (reservationNumberEl) {
         const confirmation = reservation.confirmation_number || `ID ${reservation.id}`;
@@ -561,6 +862,9 @@ function updateReservationMeta(reservation = null) {
             if (latestInvoice.due_date) {
                 parts.push(`Fällig: ${formatDate(latestInvoice.due_date)}`);
             }
+            if (latestInvoice.closed_at) {
+                parts.push(`Abgeschlossen: ${formatDateTime(latestInvoice.closed_at)}`);
+            }
             reservationInvoiceStatus.textContent = parts.join(' · ');
         } else {
             reservationInvoiceStatus.textContent = 'Noch keine Rechnung erstellt.';
@@ -574,6 +878,15 @@ function updateReservationMeta(reservation = null) {
         } else {
             reservationPayInvoiceButton.disabled = true;
             reservationPayInvoiceButton.textContent = latestInvoice ? 'Bereits bezahlt' : 'Als bezahlt verbuchen';
+        }
+    }
+    if (reservationCloseInvoiceButton) {
+        if (latestInvoice && !latestInvoice.closed_at) {
+            reservationCloseInvoiceButton.disabled = false;
+            reservationCloseInvoiceButton.textContent = 'Rechnung abschließen';
+        } else {
+            reservationCloseInvoiceButton.disabled = true;
+            reservationCloseInvoiceButton.textContent = latestInvoice ? 'Bereits abgeschlossen' : 'Rechnung abschließen';
         }
     }
 }
@@ -830,11 +1143,12 @@ function updateReservationCapacityHint() {
     if (!reservationForm || !reservationCapacityEl) {
         return;
     }
-    const adults = Number(reservationForm.adults?.value || 0);
-    const children = Number(reservationForm.children?.value || 0);
+    const adults = Number(reservationAdultsInput?.value || 0);
+    const children = Number(reservationChildrenInput?.value || 0);
     const guestTotal = adults + children;
-    const roomIds = reservationRoomsSelect
-        ? Array.from(reservationRoomsSelect.selectedOptions).map((option) => Number(option.value))
+    const roomsSelect = getReservationRoomsSelect();
+    const roomIds = roomsSelect
+        ? Array.from(roomsSelect.selectedOptions).map((option) => Number(option.value))
         : [];
 
     if (!roomIds.length) {
@@ -1155,10 +1469,18 @@ function fillGuestFields(guest) {
     if (!reservationForm) {
         return;
     }
-    reservationForm.guest_first.value = guest?.first_name || '';
-    reservationForm.guest_last.value = guest?.last_name || '';
-    reservationForm.guest_email.value = guest?.email || '';
-    reservationForm.guest_phone.value = guest?.phone || '';
+    if (reservationGuestFirstInput) {
+        reservationGuestFirstInput.value = guest?.first_name || '';
+    }
+    if (reservationGuestLastInput) {
+        reservationGuestLastInput.value = guest?.last_name || '';
+    }
+    if (reservationGuestEmailInput) {
+        reservationGuestEmailInput.value = guest?.email || '';
+    }
+    if (reservationGuestPhoneInput) {
+        reservationGuestPhoneInput.value = guest?.phone || '';
+    }
     if (reservationGuestCompanySelect) {
         reservationGuestCompanySelect.value = guest?.company_id ? String(guest.company_id) : '';
     }
@@ -1202,18 +1524,40 @@ function fillReservationForm(reservation) {
     populateRoomOptions();
     populateCompanyDropdowns();
 
-    reservationForm.check_in.value = reservation.check_in_date ? reservation.check_in_date.slice(0, 10) : '';
-    reservationForm.check_out.value = reservation.check_out_date ? reservation.check_out_date.slice(0, 10) : '';
-    reservationForm.adults.value = reservation.adults ?? 1;
-    reservationForm.children.value = reservation.children ?? 0;
-    reservationForm.total_amount.value = reservation.total_amount ?? '';
-    reservationForm.currency.value = reservation.currency || 'EUR';
-    reservationForm.status.value = reservation.status || 'confirmed';
-    reservationForm.booked_via.value = reservation.booked_via || '';
+    const ratePlanSelect = getReservationRatePlanSelect();
+    if (ratePlanSelect) {
+        ratePlanSelect.value = reservation.rate_plan_id ? String(reservation.rate_plan_id) : '';
+    }
+
+    if (reservationCheckInInput) {
+        reservationCheckInInput.value = reservation.check_in_date ? reservation.check_in_date.slice(0, 10) : '';
+    }
+    if (reservationCheckOutInput) {
+        reservationCheckOutInput.value = reservation.check_out_date ? reservation.check_out_date.slice(0, 10) : '';
+    }
+    if (reservationAdultsInput) {
+        reservationAdultsInput.value = reservation.adults ?? 1;
+    }
+    if (reservationChildrenInput) {
+        reservationChildrenInput.value = reservation.children ?? 0;
+    }
+    if (reservationTotalAmountInput) {
+        reservationTotalAmountInput.value = reservation.total_amount ?? '';
+    }
+    if (reservationCurrencyInput) {
+        reservationCurrencyInput.value = reservation.currency || 'EUR';
+    }
+    if (reservationStatusSelect) {
+        reservationStatusSelect.value = reservation.status || 'confirmed';
+    }
+    if (reservationBookedViaInput) {
+        reservationBookedViaInput.value = reservation.booked_via || '';
+    }
 
     const selectedRoomIds = new Set((reservation.rooms || []).map((room) => Number(room.room_id ?? room.id)));
-    if (reservationRoomsSelect) {
-        Array.from(reservationRoomsSelect.options).forEach((option) => {
+    const roomsSelect = getReservationRoomsSelect();
+    if (roomsSelect) {
+        Array.from(roomsSelect.options).forEach((option) => {
             option.selected = selectedRoomIds.has(Number(option.value));
         });
     }
@@ -1259,6 +1603,7 @@ async function startReservationEdit(reservationId) {
             reservationDetails.open = true;
         }
         fillReservationForm(reservation);
+        await loadReservationCart(reservation.id);
     } catch (error) {
         showMessage(error.message, 'error');
     }
@@ -1682,10 +2027,15 @@ function populateRoomTypeSelects() {
 }
 
 function populateRatePlanSelect() {
-    const ratePlanSelect = document.querySelector('#reservation-form select[name="rate_plan"]');
-    if (ratePlanSelect) {
-        const options = state.ratePlans.map((plan) => `<option value="${plan.id}">${plan.name}</option>`);
-        ratePlanSelect.innerHTML = `<option value="">Ohne Rate-Plan</option>${options.join('')}`;
+    const ratePlanSelect = getReservationRatePlanSelect();
+    if (!ratePlanSelect) {
+        return;
+    }
+    const previousValue = ratePlanSelect.value;
+    const options = state.ratePlans.map((plan) => `<option value="${plan.id}">${plan.name}</option>`);
+    ratePlanSelect.innerHTML = `<option value="">Ohne Rate-Plan</option>${options.join('')}`;
+    if (previousValue && [...ratePlanSelect.options].some((option) => option.value === previousValue)) {
+        ratePlanSelect.value = previousValue;
     }
 }
 
@@ -1697,10 +2047,11 @@ function populateRoomOptions() {
         const typeLabel = room.room_type_name || 'Kategorie';
         return `<option value="${room.id}">${room.room_number} (${typeLabel}${capacityText})</option>`;
     });
-    if (reservationRoomsSelect) {
-        const selectedValues = new Set(Array.from(reservationRoomsSelect.selectedOptions || []).map((option) => option.value));
-        reservationRoomsSelect.innerHTML = options.join('');
-        Array.from(reservationRoomsSelect.options).forEach((option) => {
+    const roomsSelect = getReservationRoomsSelect();
+    if (roomsSelect) {
+        const selectedValues = new Set(Array.from(roomsSelect.selectedOptions || []).map((option) => option.value));
+        roomsSelect.innerHTML = options.join('');
+        Array.from(roomsSelect.options).forEach((option) => {
             option.selected = selectedValues.has(option.value);
         });
     }
@@ -2205,16 +2556,17 @@ if (reservationForm) {
         if (!requireToken()) {
             return;
         }
-        const rooms = reservationRoomsSelect
-            ? Array.from(reservationRoomsSelect.selectedOptions).map((option) => Number(option.value))
+        const roomsSelect = getReservationRoomsSelect();
+        const rooms = roomsSelect
+            ? Array.from(roomsSelect.selectedOptions).map((option) => Number(option.value))
             : [];
         if (rooms.length === 0) {
             showMessage('Bitte mindestens ein Zimmer auswählen.', 'error');
             return;
         }
 
-        const adults = Number(reservationForm.adults.value || 0);
-        const children = Number(reservationForm.children.value || 0);
+        const adults = Number(reservationAdultsInput?.value || 0);
+        const children = Number(reservationChildrenInput?.value || 0);
         const totalGuests = adults + children;
         if (totalGuests < 1) {
             showMessage('Bitte mindestens einen Gast angeben.', 'error');
@@ -2227,17 +2579,34 @@ if (reservationForm) {
         }
 
         const payload = {
-            check_in_date: reservationForm.check_in.value,
-            check_out_date: reservationForm.check_out.value,
+            check_in_date: reservationCheckInInput ? reservationCheckInInput.value : '',
+            check_out_date: reservationCheckOutInput ? reservationCheckOutInput.value : '',
             adults,
             children,
-            rate_plan_id: reservationForm.rate_plan.value ? Number(reservationForm.rate_plan.value) : null,
+            rate_plan_id: (() => {
+                const ratePlanSelect = getReservationRatePlanSelect();
+                return ratePlanSelect && ratePlanSelect.value
+                    ? Number(ratePlanSelect.value)
+                    : null;
+            })(),
             rooms,
-            total_amount: reservationForm.total_amount.value ? Number(reservationForm.total_amount.value) : null,
-            currency: reservationForm.currency.value || 'EUR',
-            status: reservationForm.status.value,
-            booked_via: reservationForm.booked_via.value || null,
+            total_amount: reservationTotalAmountInput && reservationTotalAmountInput.value
+                ? Number(reservationTotalAmountInput.value)
+                : null,
+            currency: reservationCurrencyInput && reservationCurrencyInput.value
+                ? reservationCurrencyInput.value
+                : 'EUR',
+            status: reservationStatusSelect && reservationStatusSelect.value
+                ? reservationStatusSelect.value
+                : 'confirmed',
+            booked_via: reservationBookedViaInput && reservationBookedViaInput.value
+                ? reservationBookedViaInput.value
+                : null,
+            notes: reservationForm && reservationForm.notes ? reservationForm.notes.value : '',
         };
+
+        const ratePlanId = payload.rate_plan_id;
+        payload.rate_plan_id = Number.isFinite(ratePlanId) ? ratePlanId : null;
 
         if (reservationArticleContainer) {
             const selections = Array.from(reservationArticleContainer.querySelectorAll('.article-option')).map((option) => {
@@ -2263,10 +2632,14 @@ if (reservationForm) {
 
         const selectedGuestId = guestIdInput && guestIdInput.value ? Number(guestIdInput.value) : null;
         const guestPayload = {
-            first_name: reservationForm.guest_first.value,
-            last_name: reservationForm.guest_last.value,
-            email: reservationForm.guest_email.value || null,
-            phone: reservationForm.guest_phone.value || null,
+            first_name: reservationGuestFirstInput ? reservationGuestFirstInput.value : '',
+            last_name: reservationGuestLastInput ? reservationGuestLastInput.value : '',
+            email: reservationGuestEmailInput && reservationGuestEmailInput.value
+                ? reservationGuestEmailInput.value
+                : null,
+            phone: reservationGuestPhoneInput && reservationGuestPhoneInput.value
+                ? reservationGuestPhoneInput.value
+                : null,
         };
         if (reservationGuestCompanySelect) {
             guestPayload.company_id = reservationGuestCompanySelect.value ? Number(reservationGuestCompanySelect.value) : null;
@@ -2309,8 +2682,17 @@ if (reservationCancelButton) {
     });
 }
 
-if (reservationRoomsSelect) {
-    reservationRoomsSelect.addEventListener('change', updateReservationCapacityHint);
+const reservationRoomsSelectForEvents = getReservationRoomsSelect();
+if (reservationRoomsSelectForEvents) {
+    reservationRoomsSelectForEvents.addEventListener('change', updateReservationCapacityHint);
+}
+
+if (reservationAdultsInput) {
+    reservationAdultsInput.addEventListener('input', updateReservationCapacityHint);
+}
+
+if (reservationChildrenInput) {
+    reservationChildrenInput.addEventListener('input', updateReservationCapacityHint);
 }
 
 if (reservationArticleContainer) {
@@ -2333,11 +2715,6 @@ if (reservationArticleContainer) {
             }
         }
     });
-}
-
-if (reservationForm) {
-    reservationForm.adults.addEventListener('input', updateReservationCapacityHint);
-    reservationForm.children.addEventListener('input', updateReservationCapacityHint);
 }
 
 if (guestSearchInput) {

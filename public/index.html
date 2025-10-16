@@ -96,8 +96,40 @@
                             <a id="reservation-invoice-link" class="meta-link hidden" href="#" target="_blank" rel="noopener">PDF öffnen</a>
                             <button type="button" id="reservation-create-invoice">Rechnung erstellen</button>
                             <button type="button" id="reservation-pay-invoice" class="secondary">Als bezahlt verbuchen</button>
+                            <button type="button" id="reservation-close-invoice" class="secondary">Rechnung abschließen</button>
                         </div>
                         <p id="reservation-invoice-status" class="muted small-text"></p>
+                    </div>
+                    <div class="reservation-meta-block">
+                        <span class="meta-label">Warenkorb</span>
+                        <div class="meta-actions">
+                            <button type="button" id="reservation-cart-add" class="secondary">Position hinzufügen</button>
+                            <button type="button" id="reservation-cart-refresh" class="secondary">Aktualisieren</button>
+                        </div>
+                        <ul id="reservation-cart-items" class="meta-list"></ul>
+                        <p id="reservation-cart-total" class="muted small-text"></p>
+                        <form id="reservation-cart-form" class="cart-form hidden">
+                            <div class="cart-form-row">
+                                <label>Beschreibung
+                                    <input type="text" name="description" required>
+                                </label>
+                            </div>
+                            <div class="cart-form-grid">
+                                <label>Menge
+                                    <input type="number" name="quantity" step="0.01" min="0.01" value="1">
+                                </label>
+                                <label>Einzelpreis
+                                    <input type="number" name="unit_price" step="0.01" value="0">
+                                </label>
+                                <label>MwSt %
+                                    <input type="number" name="tax_rate" step="0.01" value="7">
+                                </label>
+                            </div>
+                            <div class="cart-form-actions">
+                                <button type="submit">Speichern</button>
+                                <button type="button" id="reservation-cart-cancel" class="secondary">Abbrechen</button>
+                            </div>
+                        </form>
                     </div>
                 </div>
                 <fieldset>
