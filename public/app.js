@@ -100,9 +100,22 @@ const reservationCartCancelButton = document.getElementById('reservation-cart-ca
 const reservationCartTotal = document.getElementById('reservation-cart-total');
 const reservationsList = document.getElementById('reservations-list');
 const reservationCapacityEl = document.getElementById('reservation-capacity');
+const reservationCheckInInput = reservationForm ? reservationForm.querySelector('input[name="check_in"]') : null;
+const reservationCheckOutInput = reservationForm ? reservationForm.querySelector('input[name="check_out"]') : null;
+const reservationAdultsInput = reservationForm ? reservationForm.querySelector('input[name="adults"]') : null;
+const reservationChildrenInput = reservationForm ? reservationForm.querySelector('input[name="children"]') : null;
+const reservationTotalAmountInput = reservationForm ? reservationForm.querySelector('input[name="total_amount"]') : null;
+const reservationCurrencyInput = reservationForm ? reservationForm.querySelector('input[name="currency"]') : null;
+const reservationStatusSelect = reservationForm ? reservationForm.querySelector('select[name="status"]') : null;
+const reservationBookedViaInput = reservationForm ? reservationForm.querySelector('input[name="booked_via"]') : null;
+const reservationRatePlanSelect = reservationForm ? reservationForm.querySelector('select[name="rate_plan"]') : null;
 const reservationRoomsSelect = reservationForm ? reservationForm.querySelector('select[name="rooms"]') : null;
 const guestSearchInput = reservationForm ? reservationForm.querySelector('input[name="guest_search"]') : null;
 const guestIdInput = reservationForm ? reservationForm.querySelector('input[name="guest_id"]') : null;
+const reservationGuestFirstInput = reservationForm ? reservationForm.querySelector('input[name="guest_first"]') : null;
+const reservationGuestLastInput = reservationForm ? reservationForm.querySelector('input[name="guest_last"]') : null;
+const reservationGuestEmailInput = reservationForm ? reservationForm.querySelector('input[name="guest_email"]') : null;
+const reservationGuestPhoneInput = reservationForm ? reservationForm.querySelector('input[name="guest_phone"]') : null;
 const guestSearchResults = document.getElementById('guest-search-results');
 const guestClearSelectionButton = document.getElementById('guest-clear-selection');
 const reservationGuestCompanySelect = reservationForm ? reservationForm.querySelector('select[name="guest_company"]') : null;
@@ -1114,8 +1127,8 @@ function updateReservationCapacityHint() {
     if (!reservationForm || !reservationCapacityEl) {
         return;
     }
-    const adults = Number(reservationForm.adults?.value || 0);
-    const children = Number(reservationForm.children?.value || 0);
+    const adults = Number(reservationAdultsInput?.value || 0);
+    const children = Number(reservationChildrenInput?.value || 0);
     const guestTotal = adults + children;
     const roomIds = reservationRoomsSelect
         ? Array.from(reservationRoomsSelect.selectedOptions).map((option) => Number(option.value))
@@ -1439,10 +1452,18 @@ function fillGuestFields(guest) {
     if (!reservationForm) {
         return;
     }
-    reservationForm.guest_first.value = guest?.first_name || '';
-    reservationForm.guest_last.value = guest?.last_name || '';
-    reservationForm.guest_email.value = guest?.email || '';
-    reservationForm.guest_phone.value = guest?.phone || '';
+    if (reservationGuestFirstInput) {
+        reservationGuestFirstInput.value = guest?.first_name || '';
+    }
+    if (reservationGuestLastInput) {
+        reservationGuestLastInput.value = guest?.last_name || '';
+    }
+    if (reservationGuestEmailInput) {
+        reservationGuestEmailInput.value = guest?.email || '';
+    }
+    if (reservationGuestPhoneInput) {
+        reservationGuestPhoneInput.value = guest?.phone || '';
+    }
     if (reservationGuestCompanySelect) {
         reservationGuestCompanySelect.value = guest?.company_id ? String(guest.company_id) : '';
     }
@@ -1486,14 +1507,30 @@ function fillReservationForm(reservation) {
     populateRoomOptions();
     populateCompanyDropdowns();
 
-    reservationForm.check_in.value = reservation.check_in_date ? reservation.check_in_date.slice(0, 10) : '';
-    reservationForm.check_out.value = reservation.check_out_date ? reservation.check_out_date.slice(0, 10) : '';
-    reservationForm.adults.value = reservation.adults ?? 1;
-    reservationForm.children.value = reservation.children ?? 0;
-    reservationForm.total_amount.value = reservation.total_amount ?? '';
-    reservationForm.currency.value = reservation.currency || 'EUR';
-    reservationForm.status.value = reservation.status || 'confirmed';
-    reservationForm.booked_via.value = reservation.booked_via || '';
+    if (reservationCheckInInput) {
+        reservationCheckInInput.value = reservation.check_in_date ? reservation.check_in_date.slice(0, 10) : '';
+    }
+    if (reservationCheckOutInput) {
+        reservationCheckOutInput.value = reservation.check_out_date ? reservation.check_out_date.slice(0, 10) : '';
+    }
+    if (reservationAdultsInput) {
+        reservationAdultsInput.value = reservation.adults ?? 1;
+    }
+    if (reservationChildrenInput) {
+        reservationChildrenInput.value = reservation.children ?? 0;
+    }
+    if (reservationTotalAmountInput) {
+        reservationTotalAmountInput.value = reservation.total_amount ?? '';
+    }
+    if (reservationCurrencyInput) {
+        reservationCurrencyInput.value = reservation.currency || 'EUR';
+    }
+    if (reservationStatusSelect) {
+        reservationStatusSelect.value = reservation.status || 'confirmed';
+    }
+    if (reservationBookedViaInput) {
+        reservationBookedViaInput.value = reservation.booked_via || '';
+    }
 
     const selectedRoomIds = new Set((reservation.rooms || []).map((room) => Number(room.room_id ?? room.id)));
     if (reservationRoomsSelect) {
@@ -1967,10 +2004,9 @@ function populateRoomTypeSelects() {
 }
 
 function populateRatePlanSelect() {
-    const ratePlanSelect = document.querySelector('#reservation-form select[name="rate_plan"]');
-    if (ratePlanSelect) {
+    if (reservationRatePlanSelect) {
         const options = state.ratePlans.map((plan) => `<option value="${plan.id}">${plan.name}</option>`);
-        ratePlanSelect.innerHTML = `<option value="">Ohne Rate-Plan</option>${options.join('')}`;
+        reservationRatePlanSelect.innerHTML = `<option value="">Ohne Rate-Plan</option>${options.join('')}`;
     }
 }
 
@@ -2498,8 +2534,8 @@ if (reservationForm) {
             return;
         }
 
-        const adults = Number(reservationForm.adults.value || 0);
-        const children = Number(reservationForm.children.value || 0);
+        const adults = Number(reservationAdultsInput?.value || 0);
+        const children = Number(reservationChildrenInput?.value || 0);
         const totalGuests = adults + children;
         if (totalGuests < 1) {
             showMessage('Bitte mindestens einen Gast angeben.', 'error');
@@ -2512,16 +2548,26 @@ if (reservationForm) {
         }
 
         const payload = {
-            check_in_date: reservationForm.check_in.value,
-            check_out_date: reservationForm.check_out.value,
+            check_in_date: reservationCheckInInput ? reservationCheckInInput.value : '',
+            check_out_date: reservationCheckOutInput ? reservationCheckOutInput.value : '',
             adults,
             children,
-            rate_plan_id: reservationForm.rate_plan.value ? Number(reservationForm.rate_plan.value) : null,
+            rate_plan_id: reservationRatePlanSelect && reservationRatePlanSelect.value
+                ? Number(reservationRatePlanSelect.value)
+                : null,
             rooms,
-            total_amount: reservationForm.total_amount.value ? Number(reservationForm.total_amount.value) : null,
-            currency: reservationForm.currency.value || 'EUR',
-            status: reservationForm.status.value,
-            booked_via: reservationForm.booked_via.value || null,
+            total_amount: reservationTotalAmountInput && reservationTotalAmountInput.value
+                ? Number(reservationTotalAmountInput.value)
+                : null,
+            currency: reservationCurrencyInput && reservationCurrencyInput.value
+                ? reservationCurrencyInput.value
+                : 'EUR',
+            status: reservationStatusSelect && reservationStatusSelect.value
+                ? reservationStatusSelect.value
+                : 'confirmed',
+            booked_via: reservationBookedViaInput && reservationBookedViaInput.value
+                ? reservationBookedViaInput.value
+                : null,
         };
 
         if (reservationArticleContainer) {
@@ -2548,10 +2594,14 @@ if (reservationForm) {
 
         const selectedGuestId = guestIdInput && guestIdInput.value ? Number(guestIdInput.value) : null;
         const guestPayload = {
-            first_name: reservationForm.guest_first.value,
-            last_name: reservationForm.guest_last.value,
-            email: reservationForm.guest_email.value || null,
-            phone: reservationForm.guest_phone.value || null,
+            first_name: reservationGuestFirstInput ? reservationGuestFirstInput.value : '',
+            last_name: reservationGuestLastInput ? reservationGuestLastInput.value : '',
+            email: reservationGuestEmailInput && reservationGuestEmailInput.value
+                ? reservationGuestEmailInput.value
+                : null,
+            phone: reservationGuestPhoneInput && reservationGuestPhoneInput.value
+                ? reservationGuestPhoneInput.value
+                : null,
         };
         if (reservationGuestCompanySelect) {
             guestPayload.company_id = reservationGuestCompanySelect.value ? Number(reservationGuestCompanySelect.value) : null;
@@ -2598,6 +2648,14 @@ if (reservationRoomsSelect) {
     reservationRoomsSelect.addEventListener('change', updateReservationCapacityHint);
 }
 
+if (reservationAdultsInput) {
+    reservationAdultsInput.addEventListener('input', updateReservationCapacityHint);
+}
+
+if (reservationChildrenInput) {
+    reservationChildrenInput.addEventListener('input', updateReservationCapacityHint);
+}
+
 if (reservationArticleContainer) {
     reservationArticleContainer.addEventListener('change', (event) => {
         const target = event.target;
@@ -2618,11 +2676,6 @@ if (reservationArticleContainer) {
             }
         }
     });
-}
-
-if (reservationForm) {
-    reservationForm.adults.addEventListener('input', updateReservationCapacityHint);
-    reservationForm.children.addEventListener('input', updateReservationCapacityHint);
 }
 
 if (guestSearchInput) {
