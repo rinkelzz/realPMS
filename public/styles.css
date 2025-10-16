@@ -464,6 +464,74 @@ button.status-action:disabled:hover {
     min-width: 220px;
 }
 
+.meta-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: .35rem;
+}
+
+.meta-list li {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: .5rem;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: .6rem;
+    padding: .4rem .65rem;
+}
+
+.meta-list li.meta-list-empty {
+    background: none;
+    border: none;
+    padding: 0;
+    justify-content: flex-start;
+}
+
+.meta-list label {
+    display: flex;
+    align-items: center;
+    gap: .5rem;
+    flex: 1;
+}
+
+.meta-list input[type="checkbox"] {
+    accent-color: var(--primary);
+}
+
+.cart-form {
+    display: flex;
+    flex-direction: column;
+    gap: .75rem;
+    padding: .75rem;
+    border: 1px solid var(--border);
+    border-radius: .75rem;
+    background: var(--surface);
+}
+
+.cart-form-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+    gap: .75rem;
+}
+
+.cart-form-grid label,
+.cart-form-row label {
+    display: flex;
+    flex-direction: column;
+    gap: .35rem;
+}
+
+.cart-form-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: .5rem;
+    justify-content: flex-end;
+}
+
 .meta-label {
     font-size: .75rem;
     font-weight: 600;

@@ -56,6 +56,8 @@ const state = {
     calendarColorsLoaded: false,
     invoiceLogoDataUrl: null,
     currentReservationInvoices: [],
+    currentReservationCartItems: [],
+    currentReservationCurrency: 'EUR',
     invoiceStorageSettings: { ...DEFAULT_INVOICE_STORAGE_SETTINGS },
 };
 
@@ -89,6 +91,13 @@ const reservationInvoiceStatus = document.getElementById('reservation-invoice-st
 const reservationInvoiceLink = document.getElementById('reservation-invoice-link');
 const reservationCreateInvoiceButton = document.getElementById('reservation-create-invoice');
 const reservationPayInvoiceButton = document.getElementById('reservation-pay-invoice');
+const reservationCloseInvoiceButton = document.getElementById('reservation-close-invoice');
+const reservationCartList = document.getElementById('reservation-cart-items');
+const reservationCartForm = document.getElementById('reservation-cart-form');
+const reservationCartAddButton = document.getElementById('reservation-cart-add');
+const reservationCartRefreshButton = document.getElementById('reservation-cart-refresh');
+const reservationCartCancelButton = document.getElementById('reservation-cart-cancel');
+const reservationCartTotal = document.getElementById('reservation-cart-total');
 const reservationsList = document.getElementById('reservations-list');
 const reservationCapacityEl = document.getElementById('reservation-capacity');
 const reservationRoomsSelect = reservationForm ? reservationForm.querySelector('select[name="rooms"]') : null;
@@ -391,9 +400,21 @@ if (reservationCreateInvoiceButton) {
         if (!requireToken()) {
             return;
         }
+        const selectedCartItems = reservationCartList
+            ? Array.from(reservationCartList.querySelectorAll('input[type="checkbox"][data-item-id]:checked'))
+                .map((input) => Number(input.dataset.itemId))
+                .filter((id) => id > 0)
+            : [];
+        const payload = {};
+        if (selectedCartItems.length > 0) {
+            payload.cart_item_ids = selectedCartItems;
+        }
         reservationCreateInvoiceButton.disabled = true;
         try {
-            const invoice = await apiFetch(`reservations/${state.editingReservationId}/invoice`, { method: 'POST' });
+            const invoice = await apiFetch(`reservations/${state.editingReservationId}/invoice`, {
+                method: 'POST',
+                body: JSON.stringify(payload),
+            });
             const number = invoice?.invoice_number || invoice?.id || '';
             showMessage(number ? `Rechnung ${number} erstellt.` : 'Rechnung erstellt.', 'success');
             await Promise.all([
@@ -402,8 +423,9 @@ if (reservationCreateInvoiceButton) {
             ]);
             await startReservationEdit(state.editingReservationId);
         } catch (error) {
-            reservationCreateInvoiceButton.disabled = false;
             showMessage(error.message, 'error');
+        } finally {
+            reservationCreateInvoiceButton.disabled = false;
         }
     });
 }
@@ -440,6 +462,144 @@ if (reservationPayInvoiceButton) {
             reservationPayInvoiceButton.disabled = false;
             showMessage(error.message, 'error');
         }
+    });
+}
+
+if (reservationCloseInvoiceButton) {
+    reservationCloseInvoiceButton.addEventListener('click', async () => {
+        if (!state.editingReservationId) {
+            showMessage('Bitte wählen Sie zuerst eine Reservierung aus.', 'error');
+            return;
+        }
+        if (!requireToken()) {
+            return;
+        }
+        const latestInvoice = state.currentReservationInvoices[0];
+        if (!latestInvoice) {
+            showMessage('Für diese Reservierung existiert noch keine Rechnung.', 'error');
+            return;
+        }
+        if (latestInvoice.closed_at) {
+            showMessage('Diese Rechnung wurde bereits abgeschlossen.', 'info');
+            return;
+        }
+        reservationCloseInvoiceButton.disabled = true;
+        try {
+            await apiFetch(`invoices/${latestInvoice.id}/close`, { method: 'POST' });
+            showMessage('Rechnung abgeschlossen.', 'success');
+            await Promise.all([
+                loadReservations(true),
+                loadBilling(true),
+            ]);
+            await startReservationEdit(state.editingReservationId);
+        } catch (error) {
+            reservationCloseInvoiceButton.disabled = false;
+            showMessage(error.message, 'error');
+        }
+    });
+}
+
+if (reservationCartAddButton) {
+    reservationCartAddButton.addEventListener('click', () => {
+        if (!state.editingReservationId) {
+            showMessage('Bitte wählen Sie zuerst eine Reservierung aus.', 'error');
+            return;
+        }
+        resetReservationCartForm();
+        if (reservationCartForm) {
+            reservationCartForm.classList.remove('hidden');
+            const descriptionField = reservationCartForm.querySelector('input[name="description"]');
+            if (descriptionField) {
+                descriptionField.focus();
+            }
+        }
+    });
+}
+
+if (reservationCartCancelButton) {
+    reservationCartCancelButton.addEventListener('click', () => {
+        hideReservationCartForm();
+    });
+}
+
+if (reservationCartForm) {
+    reservationCartForm.addEventListener('submit', async (event) => {
+        event.preventDefault();
+        if (!state.editingReservationId) {
+            showMessage('Bitte wählen Sie zuerst eine Reservierung aus.', 'error');
+            return;
+        }
+        if (!requireToken()) {
+            return;
+        }
+        const form = event.target;
+        const payload = {
+            description: form.description.value.trim(),
+            quantity: Number(form.quantity.value || 1),
+            unit_price: Number(form.unit_price.value || 0),
+            tax_rate: form.tax_rate.value === '' ? null : Number(form.tax_rate.value),
+        };
+        if (!payload.description) {
+            showMessage('Bitte eine Beschreibung hinterlegen.', 'error');
+            return;
+        }
+        if (!Number.isFinite(payload.quantity) || payload.quantity <= 0) {
+            showMessage('Die Menge muss größer als 0 sein.', 'error');
+            return;
+        }
+        try {
+            await apiFetch(`invoice-carts/${state.editingReservationId}`, {
+                method: 'POST',
+                body: JSON.stringify(payload),
+            });
+            showMessage('Position zum Warenkorb hinzugefügt.', 'success');
+            hideReservationCartForm();
+            await loadReservationCart(state.editingReservationId);
+        } catch (error) {
+            showMessage(error.message, 'error');
+        }
+    });
+}
+
+if (reservationCartList) {
+    reservationCartList.addEventListener('click', async (event) => {
+        const button = event.target instanceof Element ? event.target.closest('button[data-item-id]') : null;
+        if (!button) {
+            return;
+        }
+        const itemId = Number(button.dataset.itemId);
+        if (!itemId) {
+            return;
+        }
+        if (!state.editingReservationId) {
+            showMessage('Bitte wählen Sie zuerst eine Reservierung aus.', 'error');
+            return;
+        }
+        if (!requireToken()) {
+            return;
+        }
+        button.disabled = true;
+        try {
+            await apiFetch(`invoice-carts/${state.editingReservationId}/${itemId}`, { method: 'DELETE' });
+            showMessage('Position aus dem Warenkorb entfernt.', 'success');
+            await loadReservationCart(state.editingReservationId);
+        } catch (error) {
+            button.disabled = false;
+            showMessage(error.message, 'error');
+        }
+    });
+}
+
+if (reservationCartRefreshButton) {
+    reservationCartRefreshButton.addEventListener('click', () => {
+        if (!state.editingReservationId) {
+            showMessage('Bitte wählen Sie zuerst eine Reservierung aus.', 'error');
+            return;
+        }
+        if (!requireToken()) {
+            return;
+        }
+        loadReservationCart(state.editingReservationId);
     });
 }
 
@@ -480,6 +640,107 @@ function formatCurrency(amount, currency = 'EUR') {
     return new Intl.NumberFormat('de-DE', { style: 'currency', currency }).format(number);
 }
 
+function resetReservationCartForm() {
+    if (!reservationCartForm) {
+        return;
+    }
+    reservationCartForm.reset();
+    const quantityField = reservationCartForm.querySelector('input[name="quantity"]');
+    const unitPriceField = reservationCartForm.querySelector('input[name="unit_price"]');
+    const taxField = reservationCartForm.querySelector('input[name="tax_rate"]');
+    if (quantityField) {
+        quantityField.value = '1';
+    }
+    if (unitPriceField) {
+        unitPriceField.value = '0';
+    }
+    if (taxField) {
+        taxField.value = '7';
+    }
+}
+
+function hideReservationCartForm() {
+    if (!reservationCartForm) {
+        return;
+    }
+    reservationCartForm.classList.add('hidden');
+    resetReservationCartForm();
+}
+
+function renderReservationCartItems() {
+    if (!reservationCartList) {
+        return;
+    }
+    reservationCartList.innerHTML = '';
+    const items = Array.isArray(state.currentReservationCartItems) ? state.currentReservationCartItems : [];
+    const currency = state.currentReservationCurrency || 'EUR';
+
+    if (items.length === 0) {
+        const empty = document.createElement('li');
+        empty.className = 'meta-list-empty muted small-text';
+        empty.textContent = 'Keine offenen Warenkorbpositionen.';
+        reservationCartList.appendChild(empty);
+        if (reservationCartTotal) {
+            reservationCartTotal.textContent = '';
+        }
+        return;
+    }
+
+    let total = 0;
+    items.forEach((item) => {
+        const lineTotal = item.total_amount !== undefined ? Number(item.total_amount) : (Number(item.quantity) || 0) * (Number(item.unit_price) || 0) * (1 + (Number(item.tax_rate) || 0) / 100);
+        if (!Number.isNaN(lineTotal)) {
+            total += lineTotal;
+        }
+
+        const li = document.createElement('li');
+        const label = document.createElement('label');
+        const checkbox = document.createElement('input');
+        checkbox.type = 'checkbox';
+        checkbox.checked = true;
+        checkbox.dataset.itemId = item.id;
+        label.appendChild(checkbox);
+
+        const description = document.createElement('span');
+        const quantity = Number(item.quantity ?? 0).toFixed(2).replace(/\.00$/, '');
+        const priceText = formatCurrency(item.unit_price ?? 0, currency);
+        const taxText = item.tax_rate !== null && item.tax_rate !== undefined
+            ? ` · MwSt ${Number(item.tax_rate).toFixed(1)}%`
+            : '';
+        description.textContent = `${item.description} · ${quantity} × ${priceText}${taxText}`;
+        label.appendChild(description);
+
+        li.appendChild(label);
+
+        const removeButton = document.createElement('button');
+        removeButton.type = 'button';
+        removeButton.className = 'secondary small';
+        removeButton.dataset.itemId = item.id;
+        removeButton.textContent = 'Entfernen';
+        li.appendChild(removeButton);
+
+        reservationCartList.appendChild(li);
+    });
+
+    if (reservationCartTotal) {
+        reservationCartTotal.textContent = `Gesamtsumme Warenkorb: ${formatCurrency(total, currency)}`;
+    }
+}
+
+async function loadReservationCart(reservationId) {
+    if (!reservationId || !requireToken()) {
+        return;
+    }
+    try {
+        const response = await apiFetch(`invoice-carts/${reservationId}`);
+        const items = Array.isArray(response?.items) ? response.items : [];
+        state.currentReservationCartItems = items;
+        renderReservationCartItems();
+    } catch (error) {
+        showMessage(error.message, 'error');
+    }
+}
+
 function escapeHtml(value) {
     return String(value)
         .replace(/&/g, '&amp;')
@@ -508,6 +769,8 @@ function updateReservationMeta(reservation = null) {
     if (!reservation) {
         reservationMeta.classList.add('hidden');
         state.currentReservationInvoices = [];
+        state.currentReservationCartItems = [];
+        state.currentReservationCurrency = 'EUR';
         if (reservationNumberEl) {
             reservationNumberEl.textContent = '--';
         }
@@ -526,11 +789,20 @@ function updateReservationMeta(reservation = null) {
             reservationPayInvoiceButton.disabled = true;
             reservationPayInvoiceButton.textContent = 'Als bezahlt verbuchen';
         }
+        if (reservationCloseInvoiceButton) {
+            reservationCloseInvoiceButton.disabled = true;
+            reservationCloseInvoiceButton.textContent = 'Rechnung abschließen';
+        }
+        renderReservationCartItems();
+        hideReservationCartForm();
         return;
     }
 
     reservationMeta.classList.remove('hidden');
     state.currentReservationInvoices = Array.isArray(reservation.invoices) ? reservation.invoices : [];
+    state.currentReservationCurrency = reservation.currency || 'EUR';
+    renderReservationCartItems();
+    hideReservationCartForm();
 
     if (reservationNumberEl) {
         const confirmation = reservation.confirmation_number || `ID ${reservation.id}`;
@@ -561,6 +833,9 @@ function updateReservationMeta(reservation = null) {
             if (latestInvoice.due_date) {
                 parts.push(`Fällig: ${formatDate(latestInvoice.due_date)}`);
             }
+            if (latestInvoice.closed_at) {
+                parts.push(`Abgeschlossen: ${formatDateTime(latestInvoice.closed_at)}`);
+            }
             reservationInvoiceStatus.textContent = parts.join(' · ');
         } else {
             reservationInvoiceStatus.textContent = 'Noch keine Rechnung erstellt.';
@@ -574,6 +849,15 @@ function updateReservationMeta(reservation = null) {
         } else {
             reservationPayInvoiceButton.disabled = true;
             reservationPayInvoiceButton.textContent = latestInvoice ? 'Bereits bezahlt' : 'Als bezahlt verbuchen';
+        }
+    }
+    if (reservationCloseInvoiceButton) {
+        if (latestInvoice && !latestInvoice.closed_at) {
+            reservationCloseInvoiceButton.disabled = false;
+            reservationCloseInvoiceButton.textContent = 'Rechnung abschließen';
+        } else {
+            reservationCloseInvoiceButton.disabled = true;
+            reservationCloseInvoiceButton.textContent = latestInvoice ? 'Bereits abgeschlossen' : 'Rechnung abschließen';
         }
     }
 }
@@ -1259,6 +1543,7 @@ async function startReservationEdit(reservationId) {
             reservationDetails.open = true;
         }
         fillReservationForm(reservation);
+        await loadReservationCart(reservation.id);
     } catch (error) {
         showMessage(error.message, 'error');
     }
