@@ -387,7 +387,6 @@ function getSchemaStatements(): array
                 description TEXT NULL,
                 base_occupancy TINYINT UNSIGNED NOT NULL DEFAULT 1,
                 max_occupancy TINYINT UNSIGNED NOT NULL DEFAULT 1,
-                base_rate DECIMAL(10,2) NULL,
                 currency CHAR(3) NULL,
                 created_at TIMESTAMP NULL,
                 updated_at TIMESTAMP NULL

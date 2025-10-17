@@ -45,6 +45,7 @@ const ARTICLE_CHARGE_SCHEMES = [
 
 const GERMAN_VAT_STANDARD = 19.0;
 const GERMAN_VAT_REDUCED = 7.0;
+const DEFAULT_NIGHTLY_RATE = 99.0;
 
 $method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
 $uri = $_SERVER['REQUEST_URI'] ?? '/';
@@ -188,14 +189,28 @@ function handleRoomTypes(string $method, array $segments): void
         if (empty($data['name'])) {
             jsonResponse(['error' => 'Name is required.'], 422);
         }
+        if (!array_key_exists('max_occupancy', $data)) {
+            jsonResponse(['error' => 'Max occupancy is required.'], 422);
+        }
 
-        $stmt = $pdo->prepare('INSERT INTO room_types (name, description, base_occupancy, max_occupancy, base_rate, currency, created_at, updated_at) VALUES (:name, :description, :base_occupancy, :max_occupancy, :base_rate, :currency, :created_at, :updated_at)');
+        $baseOccupancy = isset($data['base_occupancy']) ? (int) $data['base_occupancy'] : 1;
+        $maxOccupancy = (int) $data['max_occupancy'];
+        if ($baseOccupancy <= 0) {
+            jsonResponse(['error' => 'Base occupancy must be greater than 0.'], 422);
+        }
+        if ($maxOccupancy <= 0) {
+            jsonResponse(['error' => 'Max occupancy must be greater than 0.'], 422);
+        }
+        if ($baseOccupancy > $maxOccupancy) {
+            jsonResponse(['error' => 'Base occupancy cannot exceed max occupancy.'], 422);
+        }
+
+        $stmt = $pdo->prepare('INSERT INTO room_types (name, description, base_occupancy, max_occupancy, currency, created_at, updated_at) VALUES (:name, :description, :base_occupancy, :max_occupancy, :currency, :created_at, :updated_at)');
         $stmt->execute([
             'name' => $data['name'],
             'description' => $data['description'] ?? null,
-            'base_occupancy' => $data['base_occupancy'] ?? 1,
-            'max_occupancy' => $data['max_occupancy'] ?? ($data['base_occupancy'] ?? 1),
-            'base_rate' => $data['base_rate'] ?? null,
+            'base_occupancy' => $baseOccupancy,
+            'max_occupancy' => $maxOccupancy,
             'currency' => $data['currency'] ?? 'EUR',
             'created_at' => now(),
             'updated_at' => now(),
@@ -206,14 +221,47 @@ function handleRoomTypes(string $method, array $segments): void
 
     if (($method === 'PUT' || $method === 'PATCH') && $id !== null) {
         $data = parseJsonBody();
-        $fields = ['name', 'description', 'base_occupancy', 'max_occupancy', 'base_rate', 'currency'];
+
+        $stmt = $pdo->prepare('SELECT base_occupancy, max_occupancy FROM room_types WHERE id = :id');
+        $stmt->execute(['id' => $id]);
+        $current = $stmt->fetch();
+        if (!$current) {
+            jsonResponse(['error' => 'Room type not found.'], 404);
+        }
+
+        $fields = ['name', 'description', 'base_occupancy', 'max_occupancy', 'currency'];
         $updates = [];
         $params = ['id' => $id];
+        $baseOccupancy = (int) ($current['base_occupancy'] ?? 1);
+        $maxOccupancy = (int) ($current['max_occupancy'] ?? 1);
         foreach ($fields as $field) {
-            if (array_key_exists($field, $data)) {
-                $updates[] = sprintf('%s = :%s', $field, $field);
+            if (!array_key_exists($field, $data)) {
+                continue;
+            }
+
+            if ($field === 'base_occupancy' || $field === 'max_occupancy') {
+                if ($data[$field] === null || $data[$field] === '') {
+                    jsonResponse(['error' => sprintf('%s is required.', ucfirst(str_replace('_', ' ', $field)))], 422);
+                }
+                $value = (int) $data[$field];
+                if ($value <= 0) {
+                    jsonResponse(['error' => sprintf('%s must be greater than 0.', ucfirst(str_replace('_', ' ', $field)))], 422);
+                }
+                if ($field === 'base_occupancy') {
+                    $baseOccupancy = $value;
+                }
+                if ($field === 'max_occupancy') {
+                    $maxOccupancy = $value;
+                }
+                $params[$field] = $value;
+            } else {
                 $params[$field] = $data[$field];
             }
+            $updates[] = sprintf('%s = :%s', $field, $field);
+        }
+
+        if ($baseOccupancy > $maxOccupancy) {
+            jsonResponse(['error' => 'Base occupancy cannot exceed max occupancy.'], 422);
         }
 
         if (!$updates) {
@@ -1165,7 +1213,7 @@ function handleReservations(string $method, array $segments): void
 
     if ($method === 'GET') {
         if ($id !== null) {
-            $stmt = $pdo->prepare('SELECT r.*, g.first_name, g.last_name, g.email, g.phone, g.company_id, c.name AS company_name FROM reservations r JOIN guests g ON g.id = r.guest_id LEFT JOIN companies c ON c.id = g.company_id WHERE r.id = :id');
+            $stmt = $pdo->prepare('SELECT r.*, g.first_name, g.last_name, g.email, g.phone, g.company_id, c.name AS company_name, rp.name AS rate_plan_name, rp.base_price AS rate_plan_base_price, rp.currency AS rate_plan_currency FROM reservations r JOIN guests g ON g.id = r.guest_id LEFT JOIN companies c ON c.id = g.company_id LEFT JOIN rate_plans rp ON rp.id = r.rate_plan_id WHERE r.id = :id');
             $stmt->execute(['id' => $id]);
             $reservation = $stmt->fetch();
             if (!$reservation) {
@@ -1182,7 +1230,7 @@ function handleReservations(string $method, array $segments): void
 
         $conditions = [];
         $params = [];
-        $query = 'SELECT r.*, g.first_name, g.last_name, g.company_id, c.name AS company_name FROM reservations r JOIN guests g ON g.id = r.guest_id LEFT JOIN companies c ON c.id = g.company_id';
+        $query = 'SELECT r.*, g.first_name, g.last_name, g.company_id, c.name AS company_name, rp.name AS rate_plan_name, rp.base_price AS rate_plan_base_price, rp.currency AS rate_plan_currency FROM reservations r JOIN guests g ON g.id = r.guest_id LEFT JOIN companies c ON c.id = g.company_id LEFT JOIN rate_plans rp ON rp.id = r.rate_plan_id';
         if (isset($_GET['status'])) {
             $conditions[] = 'r.status = :status';
             $params['status'] = $_GET['status'];
@@ -1212,7 +1260,7 @@ function handleReservations(string $method, array $segments): void
 
     if ($method === 'POST' && $id === null) {
         $data = parseJsonBody();
-        validateReservationPayload($data);
+        validateReservationPayload($pdo, $data);
 
         $guestCount = calculateGuestCount($data['adults'] ?? 1, $data['children'] ?? 0);
         $roomRequests = normalizeReservationRoomRequests($pdo, $data['room_requests'] ?? []);
@@ -1249,7 +1297,7 @@ function handleReservations(string $method, array $segments): void
                 'check_out_date' => $data['check_out_date'],
                 'adults' => $data['adults'] ?? 1,
                 'children' => $data['children'] ?? 0,
-                'rate_plan_id' => $data['rate_plan_id'] ?? null,
+                'rate_plan_id' => normalizeRatePlanId($pdo, $data['rate_plan_id'] ?? null),
                 'total_amount' => $data['total_amount'] ?? null,
                 'currency' => $data['currency'] ?? 'EUR',
                 'booked_via' => $data['booked_via'] ?? null,
@@ -1385,6 +1433,8 @@ function handleReservations(string $method, array $segments): void
                         jsonResponse(['error' => 'Unsupported reservation status.'], 422);
                     }
                     $params[$field] = $normalizedStatus;
+                } elseif ($field === 'rate_plan_id') {
+                    $params[$field] = normalizeRatePlanId($pdo, $data[$field]);
                 } else {
                     $params[$field] = $data[$field];
                 }
@@ -1575,7 +1625,7 @@ function applyReservationStatusChange(PDO $pdo, int $reservationId, string $stat
     updateRoomsForReservationStatus($pdo, $reservationId, $status, $notes, $recordedBy);
 }
 
-function validateReservationPayload(array $data): void
+function validateReservationPayload(PDO $pdo, array $data): void
 {
     foreach (['check_in_date', 'check_out_date'] as $field) {
         if (empty($data[$field]) || !validateDate($data[$field])) {
@@ -1616,6 +1666,10 @@ function validateReservationPayload(array $data): void
 
     if (isset($data['status']) && normalizeReservationStatus((string) $data['status']) === null) {
         jsonResponse(['error' => 'Unsupported reservation status.'], 422);
+    }
+
+    if (array_key_exists('rate_plan_id', $data)) {
+        normalizeRatePlanId($pdo, $data['rate_plan_id']);
     }
 
     if (isset($data['articles'])) {
@@ -1732,8 +1786,21 @@ function normalizeRoomAssignments(array $rooms): array
     foreach ($rooms as $room) {
         if (is_array($room)) {
             $roomId = (int) ($room['room_id'] ?? 0);
-            $nightlyRate = $room['nightly_rate'] ?? null;
-            $currency = $room['currency'] ?? null;
+            $nightlyRate = null;
+            if (array_key_exists('nightly_rate', $room) && $room['nightly_rate'] !== null && $room['nightly_rate'] !== '') {
+                if (!is_numeric((string) $room['nightly_rate'])) {
+                    throw new InvalidArgumentException('nightly_rate must be numeric when provided.');
+                }
+                $nightlyRate = round((float) $room['nightly_rate'], 2);
+                if ($nightlyRate < 0) {
+                    throw new InvalidArgumentException('nightly_rate must be zero or positive.');
+                }
+            }
+            $currency = null;
+            if (array_key_exists('currency', $room) && $room['currency'] !== null) {
+                $currencyValue = strtoupper(substr(trim((string) $room['currency']), 0, 3));
+                $currency = $currencyValue !== '' ? $currencyValue : null;
+            }
         } else {
             $roomId = (int) $room;
             $nightlyRate = null;
@@ -2036,6 +2103,33 @@ function normalizeCompanyId(PDO $pdo, mixed $value, bool $allowResponse = true):
     return $companyId;
 }
 
+function normalizeRatePlanId(PDO $pdo, mixed $value, bool $allowResponse = true): ?int
+{
+    if ($value === null) {
+        return null;
+    }
+
+    if (is_string($value)) {
+        $trimmed = trim($value);
+        if ($trimmed === '') {
+            return null;
+        }
+        $value = $trimmed;
+    }
+
+    $ratePlanId = (int) $value;
+    if ($ratePlanId <= 0) {
+        if ($allowResponse) {
+            jsonResponse(['error' => 'rate_plan_id must reference an existing rate plan.'], 422);
+        }
+        throw new InvalidArgumentException('rate_plan_id must reference an existing rate plan.');
+    }
+
+    ensureRatePlanExists($pdo, $ratePlanId, $allowResponse);
+
+    return $ratePlanId;
+}
+
 function ensureCompanyExists(PDO $pdo, int $companyId, bool $allowResponse = true): void
 {
     $stmt = $pdo->prepare('SELECT id FROM companies WHERE id = :id');
@@ -2048,6 +2142,18 @@ function ensureCompanyExists(PDO $pdo, int $companyId, bool $allowResponse = tru
     }
 }
 
+function ensureRatePlanExists(PDO $pdo, int $ratePlanId, bool $allowResponse = true): void
+{
+    $stmt = $pdo->prepare('SELECT id FROM rate_plans WHERE id = :id');
+    $stmt->execute(['id' => $ratePlanId]);
+    if ($stmt->fetchColumn() === false) {
+        if ($allowResponse) {
+            jsonResponse(['error' => 'rate_plan_id must reference an existing rate plan.'], 422);
+        }
+        throw new InvalidArgumentException('rate_plan_id must reference an existing rate plan.');
+    }
+}
+
 function assignRoomsToReservation(PDO $pdo, int $reservationId, array $rooms, string $checkIn, string $checkOut, int $guestCount, ?int $ignoreReservationId = null): void
 {
     $assignments = normalizeRoomAssignments($rooms);
@@ -2055,20 +2161,87 @@ function assignRoomsToReservation(PDO $pdo, int $reservationId, array $rooms, st
 
     ensureRoomCapacity($pdo, $roomIds, $guestCount);
 
+    $reservationRateContext = fetchReservationRateContext($pdo, $reservationId);
+    $roomRateDefaults = fetchRoomRateMetadata($pdo, $roomIds);
+
     foreach ($assignments as $assignment) {
         $roomId = $assignment['room_id'];
         if (!isRoomAvailable($pdo, $roomId, $checkIn, $checkOut, $ignoreReservationId ?? $reservationId)) {
             throw new RuntimeException(sprintf('Room %d is not available for the selected dates.', $roomId));
         }
 
+        $nightlyRate = $assignment['nightly_rate'];
+        if ($nightlyRate === null && isset($reservationRateContext['rate_plan_base_price'])) {
+            $nightlyRate = $reservationRateContext['rate_plan_base_price'];
+        }
+        if ($nightlyRate === null && isset($roomRateDefaults[$roomId]['base_rate'])) {
+            $nightlyRate = $roomRateDefaults[$roomId]['base_rate'];
+        }
+        $nightlyRate = $nightlyRate !== null ? round((float) $nightlyRate, 2) : null;
+
+        $currency = $assignment['currency']
+            ?? ($reservationRateContext['rate_plan_currency'] ?? null)
+            ?? ($roomRateDefaults[$roomId]['currency'] ?? null)
+            ?? ($reservationRateContext['currency'] ?? 'EUR');
+        $currency = $currency !== null ? strtoupper(substr((string) $currency, 0, 3)) : null;
+
         $stmt = $pdo->prepare('INSERT INTO reservation_rooms (reservation_id, room_id, nightly_rate, currency) VALUES (:reservation_id, :room_id, :nightly_rate, :currency)');
         $stmt->execute([
             'reservation_id' => $reservationId,
             'room_id' => $roomId,
-            'nightly_rate' => $assignment['nightly_rate'],
-            'currency' => $assignment['currency'],
+            'nightly_rate' => $nightlyRate,
+            'currency' => $currency,
         ]);
     }
+}
+
+function fetchReservationRateContext(PDO $pdo, int $reservationId): array
+{
+    $stmt = $pdo->prepare('SELECT r.currency, r.rate_plan_id, rp.base_price AS rate_plan_base_price, rp.currency AS rate_plan_currency FROM reservations r LEFT JOIN rate_plans rp ON rp.id = r.rate_plan_id WHERE r.id = :id');
+    $stmt->execute(['id' => $reservationId]);
+    $record = $stmt->fetch() ?: [];
+
+    $reservationCurrency = isset($record['currency']) ? trim((string) $record['currency']) : '';
+    $ratePlanCurrency = isset($record['rate_plan_currency']) ? trim((string) $record['rate_plan_currency']) : '';
+
+    return [
+        'currency' => $reservationCurrency !== '' ? strtoupper(substr($reservationCurrency, 0, 3)) : 'EUR',
+        'rate_plan_id' => isset($record['rate_plan_id']) ? (int) $record['rate_plan_id'] : null,
+        'rate_plan_base_price' => isset($record['rate_plan_base_price']) ? (float) $record['rate_plan_base_price'] : null,
+        'rate_plan_currency' => $ratePlanCurrency !== '' ? strtoupper(substr($ratePlanCurrency, 0, 3)) : null,
+    ];
+}
+
+function fetchRoomRateMetadata(PDO $pdo, array $roomIds): array
+{
+    $uniqueIds = array_values(array_unique(array_map('intval', $roomIds)));
+    if (empty($uniqueIds)) {
+        return [];
+    }
+
+    $placeholders = implode(', ', array_fill(0, count($uniqueIds), '?'));
+    $sql = <<<SQL
+        SELECT rooms.id, rt.base_rate, rt.currency
+        FROM rooms
+        LEFT JOIN room_types rt ON rt.id = rooms.room_type_id
+        WHERE rooms.id IN ($placeholders)
+    SQL;
+    $stmt = $pdo->prepare($sql);
+    $stmt->execute($uniqueIds);
+    $records = $stmt->fetchAll();
+
+    $metadata = [];
+    foreach ($records as $record) {
+        $roomId = (int) $record['id'];
+        $metadata[$roomId] = [
+            'base_rate' => isset($record['base_rate']) ? (float) $record['base_rate'] : null,
+            'currency' => isset($record['currency']) && trim((string) $record['currency']) !== ''
+                ? strtoupper(substr(trim((string) $record['currency']), 0, 3))
+                : null,
+        ];
+    }
+
+    return $metadata;
 }
 
 function isRoomAvailable(PDO $pdo, int $roomId, string $checkIn, string $checkOut, ?int $ignoreReservationId = null): bool
@@ -2091,7 +2264,7 @@ function isRoomAvailable(PDO $pdo, int $roomId, string $checkIn, string $checkOu
 function fetchReservationRooms(int $reservationId): array
 {
     $pdo = db();
-    $sql = 'SELECT rr.*, rooms.room_number, rooms.room_type_id, rt.name AS room_type_name, rt.base_rate AS room_type_base_rate'
+    $sql = 'SELECT rr.*, rooms.room_number, rooms.room_type_id, rt.name AS room_type_name, rt.base_occupancy AS room_type_base_occupancy, rt.max_occupancy AS room_type_max_occupancy'
         . ' FROM reservation_rooms rr'
         . ' JOIN rooms ON rooms.id = rr.room_id'
         . ' LEFT JOIN room_types rt ON rt.id = rooms.room_type_id'
@@ -2695,7 +2868,7 @@ function fetchReservationBillingSnapshot(int $reservationId): array
         SELECT r.*, g.first_name, g.last_name, g.email, g.phone, g.address, g.city, g.country, g.company_id,
                c.name AS company_name, c.address AS company_address, c.city AS company_city, c.country AS company_country,
                c.email AS company_email, c.phone AS company_phone,
-               rp.base_price AS rate_plan_base_price, rp.currency AS rate_plan_currency
+               rp.name AS rate_plan_name, rp.base_price AS rate_plan_base_price, rp.currency AS rate_plan_currency
         FROM reservations r
         JOIN guests g ON g.id = r.guest_id
         LEFT JOIN companies c ON c.id = g.company_id
@@ -2722,13 +2895,14 @@ function determineNightlyRate(array $room, array $reservation, int $nights): flo
     if ($nightlyRate <= 0 && isset($reservation['rate_plan_base_price'])) {
         $nightlyRate = (float) $reservation['rate_plan_base_price'];
     }
-    if ($nightlyRate <= 0 && isset($room['room_type_base_rate'])) {
-        $nightlyRate = (float) $room['room_type_base_rate'];
-    }
     if ($nightlyRate <= 0 && isset($reservation['total_amount'])) {
         $roomCount = max(1, count($reservation['rooms'] ?? []));
         $nightCount = max(1, $nights);
         $nightlyRate = ((float) $reservation['total_amount']) / ($roomCount * $nightCount);
+    }
+
+    if ($nightlyRate <= 0) {
+        $nightlyRate = DEFAULT_NIGHTLY_RATE;
     }
 
     return max(0.0, $nightlyRate);
@@ -3378,7 +3552,7 @@ function handleGuestPortal(string $method, array $segments): void
     }
 
     $pdo = db();
-    $stmt = $pdo->prepare('SELECT r.*, g.first_name, g.last_name, g.email, g.company_id, c.name AS company_name FROM reservations r JOIN guests g ON g.id = r.guest_id LEFT JOIN companies c ON c.id = g.company_id WHERE r.confirmation_number = :confirmation');
+    $stmt = $pdo->prepare('SELECT r.*, g.first_name, g.last_name, g.email, g.company_id, c.name AS company_name, rp.name AS rate_plan_name, rp.base_price AS rate_plan_base_price, rp.currency AS rate_plan_currency FROM reservations r JOIN guests g ON g.id = r.guest_id LEFT JOIN companies c ON c.id = g.company_id LEFT JOIN rate_plans rp ON rp.id = r.rate_plan_id WHERE r.confirmation_number = :confirmation');
     $stmt->execute(['confirmation' => $confirmation]);
     $reservation = $stmt->fetch();
     if (!$reservation) {

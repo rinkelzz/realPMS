@@ -59,6 +59,8 @@ const state = {
     calendarColors: { ...CALENDAR_COLOR_DEFAULTS },
     calendarColorTokens: {},
     calendarColorsLoaded: false,
+    calendarCategorySort: 'name_asc',
+    collapsedCategories: new Set(),
     invoiceLogoDataUrl: null,
     currentReservationInvoices: [],
     guestLookupResults: [],
@@ -78,11 +80,17 @@ const state = {
 
 const CALENDAR_DAYS = 14;
 const CALENDAR_LABEL_KEY = 'realpms_calendar_label_mode';
+const CALENDAR_CATEGORY_SORT_KEY = 'realpms_calendar_category_sort';
 
 try {
     const storedMode = localStorage.getItem(CALENDAR_LABEL_KEY);
     if (storedMode === 'company' || storedMode === 'guest') {
         state.calendarLabelMode = storedMode;
+    }
+    const storedSort = localStorage.getItem(CALENDAR_CATEGORY_SORT_KEY);
+    const allowedSorts = new Set(['name_asc', 'name_desc', 'room_count_asc', 'room_count_desc']);
+    if (storedSort && allowedSorts.has(storedSort)) {
+        state.calendarCategorySort = storedSort;
     }
 } catch (error) {
     // ignore storage access issues
@@ -92,6 +100,7 @@ const notificationEl = document.getElementById('notification');
 const tokenInput = document.getElementById('api-token');
 const dashboardDateInput = document.getElementById('dashboard-date');
 const calendarLabelSelect = document.getElementById('calendar-label-mode');
+const calendarCategorySortSelect = document.getElementById('calendar-category-sort');
 const calendarSettingsButton = document.getElementById('open-calendar-settings');
 const reportStartInput = document.getElementById('report-start');
 const reportEndInput = document.getElementById('report-end');
@@ -114,6 +123,9 @@ const guestSearchResults = document.getElementById('guest-search-results');
 const guestClearSelectionButton = document.getElementById('guest-clear-selection');
 const reservationGuestCompanySelect = reservationForm ? reservationForm.querySelector('select[name="guest_company"]') : null;
 const reservationArticleContainer = document.getElementById('reservation-article-options');
+const reservationRatePlanSelect = reservationForm ? reservationForm.querySelector('select[name="rate_plan_id"]') : null;
+const reservationNightlyRateInput = reservationForm ? reservationForm.querySelector('input[name="nightly_rate"]') : null;
+const reservationTotalAmountInput = reservationForm ? reservationForm.querySelector('input[name="total_amount"]') : null;
 const roomRequestList = document.getElementById('reservation-room-requests');
 const roomRequestTypeSelect = document.getElementById('reservation-room-request-type');
 const roomRequestQuantityInput = document.getElementById('reservation-room-request-quantity');
@@ -179,9 +191,14 @@ const rateRuleDialogTitle = document.getElementById('rate-rule-dialog-title');
 const rateRuleDeleteButton = document.getElementById('rate-rule-delete');
 const rateBatchDialog = document.getElementById('rate-batch-dialog');
 const rateBatchForm = document.getElementById('rate-batch-form');
+const systemUpdateMessage = document.getElementById('system-update-message');
+const systemUpdateLog = document.getElementById('system-update-log');
+const runSystemUpdateButton = document.getElementById('run-system-update');
 
 let guestLookupDebounceId = null;
 let guestLookupRequestId = 0;
+let reservationPricingOverride = null;
+let isSyncingPricingFields = false;
 
 const RESERVATION_STATUS_LABELS = {
     tentative: 'Voranfrage',
@@ -211,6 +228,63 @@ function showMessage(message, type = 'info', timeout = 4000) {
             notificationEl.className = 'notification';
         }, timeout);
     }
+}
+
+function setSystemUpdateMessage(message, type = 'info') {
+    if (!systemUpdateMessage) {
+        return;
+    }
+    const normalizedType = type === 'success' || type === 'error' ? type : 'info';
+    systemUpdateMessage.textContent = message;
+    systemUpdateMessage.className = `system-update-message small-text ${normalizedType}`;
+}
+
+function renderSystemUpdateLog(logEntries) {
+    if (!systemUpdateLog) {
+        return;
+    }
+    if (!Array.isArray(logEntries) || logEntries.length === 0) {
+        systemUpdateLog.innerHTML = '';
+        systemUpdateLog.classList.add('hidden');
+        return;
+    }
+
+    const rows = logEntries.map((entry, index) => {
+        const label = entry && entry.label ? entry.label : `Schritt ${index + 1}`;
+        const command = entry && entry.command ? entry.command : '—';
+        const exitCode = entry && entry.exit_code !== undefined && entry.exit_code !== null && entry.exit_code !== ''
+            ? String(entry.exit_code)
+            : '—';
+        const output = entry && entry.output ? entry.output : '';
+        const outputHtml = output
+            ? `<pre>${escapeHtml(output)}</pre>`
+            : '<span class="muted">Keine Ausgabe</span>';
+        return `
+            <tr>
+                <td>${escapeHtml(label)}</td>
+                <td><code>${escapeHtml(command)}</code></td>
+                <td>${escapeHtml(exitCode)}</td>
+                <td>${outputHtml}</td>
+            </tr>
+        `;
+    }).join('');
+
+    systemUpdateLog.innerHTML = `
+        <table>
+            <thead>
+                <tr>
+                    <th>Schritt</th>
+                    <th>Befehl</th>
+                    <th>Exit-Code</th>
+                    <th>Ausgabe</th>
+                </tr>
+            </thead>
+            <tbody>
+                ${rows}
+            </tbody>
+        </table>
+    `;
+    systemUpdateLog.classList.remove('hidden');
 }
 
 function requireToken() {
@@ -520,6 +594,26 @@ if (occupancyCalendarContainer) {
     occupancyCalendarContainer.addEventListener('click', (event) => {
         const target = event.target;
         if (!(target instanceof Element)) {
+            return;
+        }
+        const categoryToggle = target.closest('.category-toggle');
+        if (categoryToggle) {
+            const categoryId = categoryToggle.dataset.categoryId;
+            if (categoryId) {
+                if (state.collapsedCategories.has(categoryId)) {
+                    state.collapsedCategories.delete(categoryId);
+                } else {
+                    state.collapsedCategories.add(categoryId);
+                }
+                renderOccupancyCalendar(
+                    state.rooms,
+                    state.reservations,
+                    dashboardDateInput && dashboardDateInput.value ? dashboardDateInput.value : toLocalISODate(),
+                    CALENDAR_DAYS,
+                    state.calendarLabelMode,
+                    state.calendarCategorySort,
+                );
+            }
             return;
         }
         const entry = target.closest('.calendar-entry');
@@ -918,6 +1012,121 @@ function getRoomTypeById(roomTypeId) {
     return state.roomTypes.find((type) => Number(type.id) === Number(roomTypeId)) || null;
 }
 
+function getRatePlanById(ratePlanId) {
+    return state.ratePlans.find((plan) => Number(plan.id) === Number(ratePlanId)) || null;
+}
+
+function getReservationRoomCount(requests = state.pendingRoomRequests) {
+    if (!Array.isArray(requests)) {
+        return 0;
+    }
+    return requests.reduce((total, request) => {
+        const quantity = Number(request?.quantity ?? 0);
+        if (Number.isFinite(quantity) && quantity > 0) {
+            return total + quantity;
+        }
+        return total;
+    }, 0);
+}
+
+function calculateNightsBetween(checkInValue, checkOutValue) {
+    const checkIn = parseISODate(checkInValue);
+    const checkOut = parseISODate(checkOutValue);
+    if (!checkIn || !checkOut) {
+        return 0;
+    }
+    const diff = Math.round((checkOut.getTime() - checkIn.getTime()) / (1000 * 60 * 60 * 24));
+    return diff > 0 ? diff : 0;
+}
+
+function populateRatePlanSelect() {
+    if (!reservationRatePlanSelect) {
+        return;
+    }
+    const previousValue = reservationRatePlanSelect.value;
+    const options = state.ratePlans.map((plan) => {
+        const labelParts = [plan.name || `Rate ${plan.id}`];
+        if (plan.base_price !== null && plan.base_price !== undefined) {
+            const currency = plan.currency || 'EUR';
+            labelParts.push(`(${formatCurrency(plan.base_price, currency)}/Nacht)`);
+        }
+        return `<option value="${plan.id}">${labelParts.join(' ')}</option>`;
+    });
+    reservationRatePlanSelect.innerHTML = `<option value="">Keine Rate</option>${options.join('')}`;
+    if (previousValue && state.ratePlans.some((plan) => String(plan.id) === previousValue)) {
+        reservationRatePlanSelect.value = previousValue;
+    }
+}
+
+function updateReservationPricing() {
+    if (!reservationForm || !reservationNightlyRateInput || !reservationTotalAmountInput) {
+        return;
+    }
+    const nights = calculateNightsBetween(reservationForm.check_in?.value, reservationForm.check_out?.value);
+    const roomCount = getReservationRoomCount();
+    const multiplier = nights > 0 && roomCount > 0 ? nights * roomCount : 0;
+    const selectedPlanId = reservationRatePlanSelect && reservationRatePlanSelect.value
+        ? Number(reservationRatePlanSelect.value)
+        : null;
+    const selectedPlan = selectedPlanId ? getRatePlanById(selectedPlanId) : null;
+
+    const currentNightly = parseFloat(reservationNightlyRateInput.value);
+    const currentTotal = parseFloat(reservationTotalAmountInput.value);
+    let nightlyValue = Number.isFinite(currentNightly) ? currentNightly : NaN;
+    let totalValue = Number.isFinite(currentTotal) ? currentTotal : NaN;
+
+    if (reservationPricingOverride === 'nightly') {
+        nightlyValue = Number.isFinite(currentNightly) ? currentNightly : NaN;
+        if (multiplier > 0 && Number.isFinite(nightlyValue)) {
+            totalValue = nightlyValue * multiplier;
+        }
+    } else if (reservationPricingOverride === 'total') {
+        totalValue = Number.isFinite(currentTotal) ? currentTotal : NaN;
+        if (multiplier > 0 && Number.isFinite(totalValue)) {
+            nightlyValue = totalValue / multiplier;
+        }
+    } else {
+        if (!Number.isFinite(nightlyValue) || nightlyValue <= 0) {
+            if (selectedPlan && selectedPlan.base_price !== undefined && selectedPlan.base_price !== null) {
+                nightlyValue = Number(selectedPlan.base_price);
+            }
+        }
+        if (multiplier > 0 && Number.isFinite(nightlyValue) && nightlyValue >= 0) {
+            totalValue = nightlyValue * multiplier;
+        } else if (!Number.isFinite(totalValue) || totalValue < 0) {
+            totalValue = NaN;
+        }
+    }
+
+    isSyncingPricingFields = true;
+    if (reservationPricingOverride !== 'nightly') {
+        if (Number.isFinite(nightlyValue) && nightlyValue >= 0) {
+            reservationNightlyRateInput.value = nightlyValue.toFixed(2);
+        } else if (!reservationNightlyRateInput.value) {
+            reservationNightlyRateInput.value = '';
+        }
+    }
+
+    if (reservationPricingOverride !== 'total') {
+        if (multiplier > 0 && Number.isFinite(totalValue) && totalValue >= 0) {
+            reservationTotalAmountInput.value = totalValue.toFixed(2);
+        } else if (!reservationPricingOverride) {
+            reservationTotalAmountInput.value = '';
+        }
+    } else if (multiplier > 0 && Number.isFinite(nightlyValue) && nightlyValue >= 0) {
+        reservationNightlyRateInput.value = nightlyValue.toFixed(2);
+    }
+    isSyncingPricingFields = false;
+
+    if (selectedPlan && selectedPlan.currency && reservationForm.currency) {
+        const currentCurrency = (reservationForm.currency.value || '').trim().toUpperCase();
+        const planCurrency = String(selectedPlan.currency).trim().toUpperCase();
+        if (!currentCurrency || currentCurrency === 'EUR') {
+            reservationForm.currency.value = planCurrency || 'EUR';
+        }
+    }
+}
+
 function normalizeClientRoomRequests(requests = []) {
     const aggregated = new Map();
     requests.forEach((request) => {
@@ -942,6 +1151,7 @@ function setReservationRoomRequests(requests) {
     state.pendingRoomRequests = normalizeClientRoomRequests(Array.isArray(requests) ? requests : []);
     renderReservationRoomRequests();
     updateReservationCapacityHint();
+    updateReservationPricing();
 }
 
 function addReservationRoomRequest(typeId, quantity = 1) {
@@ -958,6 +1168,7 @@ function addReservationRoomRequest(typeId, quantity = 1) {
     }
     renderReservationRoomRequests();
     updateReservationCapacityHint();
+    updateReservationPricing();
 }
 
 function updateReservationRoomRequestQuantity(typeId, quantity) {
@@ -973,6 +1184,7 @@ function updateReservationRoomRequestQuantity(typeId, quantity) {
     ));
     renderReservationRoomRequests();
     updateReservationCapacityHint();
+    updateReservationPricing();
 }
 
 function removeReservationRoomRequest(typeId) {
@@ -980,6 +1192,7 @@ function removeReservationRoomRequest(typeId) {
     state.pendingRoomRequests = state.pendingRoomRequests.filter((entry) => Number(entry.room_type_id) !== normalizedId);
     renderReservationRoomRequests();
     updateReservationCapacityHint();
+    updateReservationPricing();
 }
 
 function calculateRoomRequestCapacityClient(requests = state.pendingRoomRequests) {
@@ -1426,6 +1639,7 @@ function resetReservationForm() {
     reservationForm.reset();
     state.editingReservationId = null;
     state.currentReservationInvoices = [];
+    reservationPricingOverride = null;
     if (reservationSummary) {
         reservationSummary.textContent = 'Neue Reservierung anlegen';
     }
@@ -1446,6 +1660,7 @@ function resetReservationForm() {
     }
     updateReservationCapacityHint();
     updateReservationMeta(null);
+    updateReservationPricing();
 }
 
 function fillReservationForm(reservation) {
@@ -1463,6 +1678,9 @@ function fillReservationForm(reservation) {
     reservationForm.currency.value = reservation.currency || 'EUR';
     reservationForm.status.value = reservation.status || 'confirmed';
     reservationForm.booked_via.value = reservation.booked_via || '';
+    if (reservationRatePlanSelect) {
+        reservationRatePlanSelect.value = reservation.rate_plan_id ? String(reservation.rate_plan_id) : '';
+    }
     const guestSnapshot = {
         id: reservation.guest_id || null,
         first_name: reservation.first_name || '',
@@ -1478,9 +1696,37 @@ function fillReservationForm(reservation) {
     const roomRequestSource = Array.isArray(reservation.room_requests) && reservation.room_requests.length
         ? reservation.room_requests
         : deriveRoomRequestsFromRooms(reservation.rooms || []);
+    if (reservationNightlyRateInput) {
+        const nights = calculateNightsBetween(reservation.check_in_date, reservation.check_out_date);
+        const requestRoomCount = getReservationRoomCount(roomRequestSource);
+        const assignedRoomCount = Array.isArray(reservation.rooms) ? reservation.rooms.length : 0;
+        const roomCountForCalc = requestRoomCount > 0 ? requestRoomCount : assignedRoomCount;
+        let nightlyRate = null;
+        if (Array.isArray(reservation.rooms)) {
+            const roomWithRate = reservation.rooms.find((room) => Number(room.nightly_rate) > 0);
+            if (roomWithRate) {
+                nightlyRate = Number(roomWithRate.nightly_rate);
+            }
+        }
+        if (!Number.isFinite(nightlyRate) || nightlyRate <= 0) {
+            const selectedPlan = reservation.rate_plan_id ? getRatePlanById(reservation.rate_plan_id) : null;
+            if (selectedPlan && selectedPlan.base_price !== undefined && selectedPlan.base_price !== null) {
+                nightlyRate = Number(selectedPlan.base_price);
+            }
+        }
+        if ((!Number.isFinite(nightlyRate) || nightlyRate <= 0) && Number.isFinite(Number(reservation.total_amount))) {
+            const multiplier = nights > 0 ? nights * Math.max(roomCountForCalc || 1, 1) : 0;
+            if (multiplier > 0) {
+                nightlyRate = Number(reservation.total_amount) / multiplier;
+            }
+        }
+        reservationNightlyRateInput.value = Number.isFinite(nightlyRate) && nightlyRate >= 0 ? nightlyRate.toFixed(2) : '';
+    }
+    reservationPricingOverride = null;
     setReservationRoomRequests(roomRequestSource);
     updateReservationCapacityHint();
     updateReservationMeta(reservation);
+    updateReservationPricing();
 }
 
 function formatReservationAssignment(row) {
@@ -1739,7 +1985,7 @@ function startCompanyEdit(companyId) {
     }
 }
 
-function renderOccupancyCalendar(rooms, reservations, startDateStr, days = CALENDAR_DAYS, labelMode = state.calendarLabelMode || 'guest') {
+function renderOccupancyCalendar(rooms, reservations, startDateStr, days = CALENDAR_DAYS, labelMode = state.calendarLabelMode || 'guest', categorySort = state.calendarCategorySort || 'name_asc') {
     const container = document.getElementById('occupancy-calendar');
     if (!container) {
         return;
@@ -1859,7 +2105,7 @@ function renderOccupancyCalendar(rooms, reservations, startDateStr, days = CALEN
     const headerRow = document.createElement('tr');
     const roomHeader = document.createElement('th');
     roomHeader.className = 'room';
-    roomHeader.textContent = 'Zimmer';
+    roomHeader.textContent = 'Kategorie / Zimmer';
     headerRow.appendChild(roomHeader);
 
     const headerFormatter = new Intl.DateTimeFormat('de-DE', { weekday: 'short', day: '2-digit', month: '2-digit' });
@@ -1883,31 +2129,105 @@ function renderOccupancyCalendar(rooms, reservations, startDateStr, days = CALEN
     table.appendChild(thead);
 
     const tbody = document.createElement('tbody');
-    const sortedRooms = [...rooms].sort((a, b) => {
-        const typeCompare = (a.room_type_name || '').localeCompare(b.room_type_name || '', 'de', { sensitivity: 'base' });
+    const sortRooms = (a, b) => {
+        const aType = a.room_type_name || '';
+        const bType = b.room_type_name || '';
+        const typeCompare = aType.localeCompare(bType, 'de', { sensitivity: 'base' });
         if (typeCompare !== 0) {
             return typeCompare;
         }
         const aValue = (a.room_number ?? a.name ?? '').toString();
         const bValue = (b.room_number ?? b.name ?? '').toString();
         return aValue.localeCompare(bValue, 'de', { numeric: true, sensitivity: 'base' });
+    };
+
+    const roomsByCategory = new Map();
+    const sortedRooms = [...rooms].sort(sortRooms);
+    sortedRooms.forEach((room) => {
+        const typeIdRaw = Number(room.room_type_id);
+        const hasType = Number.isFinite(typeIdRaw) && typeIdRaw > 0;
+        const typeId = hasType ? typeIdRaw : null;
+        const categoryKey = hasType ? `type-${typeId}` : 'uncategorized';
+        const typeName = hasType
+            ? getRoomTypeById(typeId)?.name || room.room_type_name || `Kategorie ${typeId}`
+            : room.room_type_name || 'Ohne Kategorie';
+        if (!roomsByCategory.has(categoryKey)) {
+            roomsByCategory.set(categoryKey, {
+                key: categoryKey,
+                typeId,
+                name: typeName,
+                rooms: [],
+                overbookingRow: null,
+            });
+        }
+        roomsByCategory.get(categoryKey).rooms.push(room);
     });
 
-    const calendarRows = sortedRooms.map((room) => {
-        const roomId = room.id ?? room.room_id;
-        return {
-            calendar_id: `room-${roomId}`,
-            label: room.room_type_name ? `${room.room_number || room.name || `Zimmer ${roomId}`} (${room.room_type_name})` : (room.room_number || room.name || `Zimmer ${roomId}`),
-            isOverbooking: false,
-        };
+    overbookingRows.forEach((rowInfo) => {
+        const typeId = Number(rowInfo.room_type_id);
+        const hasType = Number.isFinite(typeId) && typeId > 0;
+        const categoryKey = hasType ? `type-${typeId}` : rowInfo.calendar_id;
+        if (!roomsByCategory.has(categoryKey)) {
+            roomsByCategory.set(categoryKey, {
+                key: categoryKey,
+                typeId: hasType ? typeId : null,
+                name: rowInfo.room_type_name || (hasType ? `Kategorie ${typeId}` : 'Überbuchung'),
+                rooms: [],
+                overbookingRow: rowInfo,
+            });
+        } else {
+            roomsByCategory.get(categoryKey).overbookingRow = rowInfo;
+        }
     });
 
-    const overbookingRowList = Array.from(overbookingRows.values()).sort((a, b) => (a.room_type_name || '').localeCompare(b.room_type_name || '', 'de', { sensitivity: 'base' }));
+    const categories = Array.from(roomsByCategory.values());
+    categories.forEach((category) => {
+        category.rooms.sort((a, b) => {
+            const aValue = (a.room_number ?? a.name ?? '').toString();
+            const bValue = (b.room_number ?? b.name ?? '').toString();
+            return aValue.localeCompare(bValue, 'de', { numeric: true, sensitivity: 'base' });
+        });
+    });
 
-    [...calendarRows, ...overbookingRowList].forEach((rowInfo) => {
+    const normalizedSort = ['name_asc', 'name_desc', 'room_count_asc', 'room_count_desc'].includes(categorySort)
+        ? categorySort
+        : 'name_asc';
+
+    state.calendarCategorySort = normalizedSort;
+
+    categories.sort((a, b) => {
+        if (normalizedSort === 'room_count_asc' || normalizedSort === 'room_count_desc') {
+            const multiplier = normalizedSort === 'room_count_desc' ? -1 : 1;
+            const diff = (a.rooms.length - b.rooms.length) * multiplier;
+            if (diff !== 0) {
+                return diff;
+            }
+            return (a.name || '').localeCompare(b.name || '', 'de', { sensitivity: 'base' });
+        }
+        const direction = normalizedSort === 'name_desc' ? -1 : 1;
+        const comparison = (a.name || '').localeCompare(b.name || '', 'de', { sensitivity: 'base' });
+        if (comparison !== 0) {
+            return comparison * direction;
+        }
+        return (a.rooms.length - b.rooms.length) * (direction === 1 ? 1 : -1);
+    });
+
+    const existingCategoryKeys = new Set(categories.map((category) => category.key));
+    Array.from(state.collapsedCategories).forEach((categoryKey) => {
+        if (!existingCategoryKeys.has(categoryKey)) {
+            state.collapsedCategories.delete(categoryKey);
+        }
+    });
+
+    const appendRow = (rowInfo, categoryKey, collapsed) => {
         const row = document.createElement('tr');
+        row.dataset.categoryId = categoryKey;
+        row.classList.add('category-child');
         if (rowInfo.isOverbooking) {
             row.classList.add('overbooking-row');
+        }
+        if (collapsed) {
+            row.classList.add('is-hidden');
         }
         const roomCell = document.createElement('th');
         roomCell.scope = 'row';
@@ -1988,6 +2308,114 @@ function renderOccupancyCalendar(rooms, reservations, startDateStr, days = CALEN
         });
 
         tbody.appendChild(row);
+    };
+
+    categories.forEach((category) => {
+        const isCollapsed = state.collapsedCategories.has(category.key);
+        const categoryRow = document.createElement('tr');
+        categoryRow.classList.add('category-row');
+        if (isCollapsed) {
+            categoryRow.classList.add('collapsed');
+        }
+        categoryRow.dataset.categoryId = category.key;
+
+        const categoryCell = document.createElement('th');
+        categoryCell.scope = 'row';
+        categoryCell.className = 'room';
+        const toggleButton = document.createElement('button');
+        toggleButton.type = 'button';
+        toggleButton.className = 'category-toggle';
+        toggleButton.dataset.categoryId = category.key;
+        toggleButton.setAttribute('aria-expanded', String(!isCollapsed));
+        const roomCountLabel = category.rooms.length > 0 ? ` (${category.rooms.length} Zimmer)` : '';
+        toggleButton.textContent = `${category.name}${roomCountLabel}`;
+        toggleButton.title = isCollapsed ? 'Kategorie anzeigen' : 'Kategorie ausblenden';
+        categoryCell.appendChild(toggleButton);
+        categoryRow.appendChild(categoryCell);
+
+        dayDates.forEach((date) => {
+            const summaryCell = document.createElement('td');
+            summaryCell.classList.add('category-summary');
+            const currentKey = dateKey(date);
+            summaryCell.dataset.date = currentKey;
+            if (currentKey === todayKey) {
+                summaryCell.classList.add('today');
+            }
+            if (isWeekend(date)) {
+                summaryCell.classList.add('weekend');
+            }
+
+            const totalRooms = category.rooms.length;
+            let occupiedRooms = 0;
+            category.rooms.forEach((room) => {
+                const roomId = room.id ?? room.room_id;
+                if (!roomId) {
+                    return;
+                }
+                const mapKey = `room-${roomId}_${currentKey}`;
+                const entries = occupancyMap.get(mapKey) || [];
+                if (entries.length > 0) {
+                    occupiedRooms += 1;
+                }
+            });
+
+            let overbookingCount = 0;
+            if (category.overbookingRow) {
+                const overKey = `${category.overbookingRow.calendar_id}_${currentKey}`;
+                const overEntries = occupancyMap.get(overKey) || [];
+                overbookingCount = overEntries.reduce((sum, entry) => sum + (Number(entry.quantity) || 0), 0);
+            }
+
+            let summaryText = '—';
+            if (totalRooms > 0) {
+                summaryText = `${occupiedRooms}/${totalRooms}`;
+                if (occupiedRooms === 0) {
+                    summaryCell.classList.add('category-empty');
+                } else if (occupiedRooms >= totalRooms) {
+                    summaryCell.classList.add('category-full');
+                } else {
+                    summaryCell.classList.add('category-partial');
+                }
+                const detailParts = [`${occupiedRooms} von ${totalRooms} Zimmern belegt`];
+                if (overbookingCount > 0) {
+                    detailParts.push(`Überbuchung: ${overbookingCount}`);
+                }
+                summaryCell.title = detailParts.join('\n');
+            }
+
+            if (overbookingCount > 0) {
+                summaryText = totalRooms > 0 ? `${summaryText} (+${overbookingCount})` : `+${overbookingCount}`;
+                summaryCell.classList.add('category-overbooking', 'has-overbooking');
+                if (!summaryCell.title) {
+                    summaryCell.title = `Überbuchung: ${overbookingCount}`;
+                }
+            }
+
+            summaryCell.textContent = summaryText;
+            categoryRow.appendChild(summaryCell);
+        });
+
+        tbody.appendChild(categoryRow);
+
+        category.rooms.forEach((room) => {
+            const roomId = room.id ?? room.room_id;
+            if (!roomId) {
+                return;
+            }
+            const baseLabel = room.room_number || room.name || `Zimmer ${roomId}`;
+            const label = room.room_type_name && room.room_type_name !== category.name
+                ? `${baseLabel} (${room.room_type_name})`
+                : baseLabel;
+            appendRow({
+                calendar_id: `room-${roomId}`,
+                label,
+                isOverbooking: false,
+            }, category.key, isCollapsed);
+        });
+
+        if (category.overbookingRow) {
+            appendRow(category.overbookingRow, category.key, isCollapsed);
+        }
     });
 
     table.appendChild(tbody);
@@ -2148,6 +2576,8 @@ async function ensureReservationReferenceData(force = false) {
 
     populateRoomOptions();
     populateRoomTypeSelects();
+    populateRatePlanSelect();
+    updateReservationPricing();
 }
 
 function populateRoleCheckboxes() {
@@ -2167,10 +2597,28 @@ function populateRoleCheckboxes() {
     });
 }
 
+function formatOccupancyRange(row) {
+    const base = Number(row?.base_occupancy ?? 0);
+    const max = Number(row?.max_occupancy ?? 0);
+    if (base > 0 && max > 0) {
+        if (base === max) {
+            return `${base} Gäste`;
+        }
+        return `${base}–${max} Gäste`;
+    }
+    if (max > 0) {
+        return `${max} Gäste`;
+    }
+    if (base > 0) {
+        return `${base} Gäste`;
+    }
+    return '—';
+}
+
 function populateRoomTypeList() {
     renderTable('room-types-list', [
         { key: 'name', label: 'Name' },
-        { key: 'base_rate', label: 'Grundpreis', render: (row) => formatCurrency(row.base_rate, row.currency || 'EUR') },
+        { key: 'occupancy', label: 'Belegung (Basis/Max)', render: formatOccupancyRange },
     ], state.roomTypes);
 }
 
@@ -4863,6 +5311,30 @@ if (calendarLabelSelect) {
             dashboardDateInput && dashboardDateInput.value ? dashboardDateInput.value : toLocalISODate(),
             CALENDAR_DAYS,
             nextMode,
+            state.calendarCategorySort,
+        );
+    });
+}
+
+if (calendarCategorySortSelect) {
+    calendarCategorySortSelect.value = state.calendarCategorySort;
+    calendarCategorySortSelect.addEventListener('change', () => {
+        const allowedSorts = ['name_asc', 'name_desc', 'room_count_asc', 'room_count_desc'];
+        const selected = calendarCategorySortSelect.value;
+        const nextSort = allowedSorts.includes(selected) ? selected : 'name_asc';
+        state.calendarCategorySort = nextSort;
+        try {
+            localStorage.setItem(CALENDAR_CATEGORY_SORT_KEY, nextSort);
+        } catch (error) {
+            // ignore storage failures
+        }
+        renderOccupancyCalendar(
+            state.rooms,
+            state.reservations,
+            dashboardDateInput && dashboardDateInput.value ? dashboardDateInput.value : toLocalISODate(),
+            CALENDAR_DAYS,
+            state.calendarLabelMode,
+            nextSort,
         );
     });
 }

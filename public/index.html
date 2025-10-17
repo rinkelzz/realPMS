@@ -66,6 +66,13 @@
                         <option value="guest">Gastname</option>
                         <option value="company">Firmenname</option>
                     </select>
+                    <label for="calendar-category-sort">Kategorien</label>
+                    <select id="calendar-category-sort">
+                        <option value="name_asc">Name (A–Z)</option>
+                        <option value="name_desc">Name (Z–A)</option>
+                        <option value="room_count_desc">Zimmeranzahl (hoch &rarr; niedrig)</option>
+                        <option value="room_count_asc">Zimmeranzahl (niedrig &rarr; hoch)</option>
+                    </select>
                     <button type="button" id="open-calendar-settings" class="secondary">Farben anpassen</button>
                 </div>
             </div>
@@ -162,6 +169,14 @@
                 </fieldset>
                 <fieldset>
                     <legend>Abrechnung</legend>
+                    <label>Rate-Plan
+                        <select name="rate_plan_id">
+                            <option value="">Keine Rate</option>
+                        </select>
+                    </label>
+                    <label>Preis pro Nacht
+                        <input type="number" name="nightly_rate" min="0" step="0.01">
+                    </label>
                     <label>Gesamtbetrag
                         <input type="number" name="total_amount" min="0" step="0.01">
                     </label>
@@ -237,9 +252,13 @@
                     <label>Name
                         <input type="text" name="name" required>
                     </label>
-                    <label>Grundpreis
-                        <input type="number" name="base_price" min="0" step="0.01">
+                    <label>Basisbelegung
+                        <input type="number" name="base_occupancy" min="1" step="1" value="1" required>
                     </label>
+                    <label>Maximalbelegung
+                        <input type="number" name="max_occupancy" min="1" step="1" value="1" required>
+                    </label>
+                    <p class="muted small-text">Geben Sie an, wie viele Gäste standardmäßig bzw. maximal in dieser Kategorie untergebracht werden können.</p>
                     <label>Beschreibung
                         <textarea name="description" rows="3"></textarea>
                     </label>
@@ -711,6 +730,17 @@
                     <button type="button" id="remove-invoice-logo" class="secondary hidden">Logo entfernen</button>
                 </div>
             </form>
+        </div>
+        <div class="panel">
+            <h3>System-Update</h3>
+            <p class="muted">Spielt die neuesten Änderungen aus dem Repository ein. Es wird der gespeicherte API-Token als Update-Token verwendet.</p>
+            <div class="system-update-controls">
+                <p id="system-update-message" class="system-update-message small-text">Noch kein Update gestartet.</p>
+                <div id="system-update-log" class="system-update-log hidden"></div>
+                <div class="form-actions">
+                    <button type="button" id="run-system-update">Update starten</button>
+                </div>
+            </div>
         </div>
     </section>
 
