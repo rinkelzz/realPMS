@@ -109,12 +109,77 @@ function rollbackActiveTransaction(): void
     /** @var PDO $pdo */
     $pdo = $GLOBALS['__realpms_pdo'];
     if ($pdo->inTransaction()) {
+        if (isDebugLogEnabled()) {
+            debugLog('Rolling back open PDO transaction before sending response.', [
+                'pdo_object_id' => spl_object_id($pdo),
+                'request' => [
+                    'method' => $_SERVER['REQUEST_METHOD'] ?? null,
+                    'uri' => $_SERVER['REQUEST_URI'] ?? null,
+                ],
+                'backtrace' => debugBacktraceSummary(),
+            ]);
+        }
+
         try {
             $pdo->rollBack();
         } catch (Throwable $exception) {
             // Ignore rollback failures so the original response can continue.
         }
     }
+}
+
+function isDebugLogEnabled(): bool
+{
+    static $enabled;
+
+    if ($enabled === null) {
+        $flag = getEnvValue('REALPMS_DEBUG_LOG');
+        if ($flag === null) {
+            $flag = getenv('REALPMS_DEBUG_LOG');
+        }
+
+        if ($flag === false || $flag === null) {
+            $enabled = false;
+        } else {
+            $flag = strtolower((string) $flag);
+            $enabled = in_array($flag, ['1', 'true', 'yes', 'on'], true);
+        }
+    }
+
+    return $enabled;
+}
+
+function debugLog(string $message, array $context = []): void
+{
+    if (!isDebugLogEnabled()) {
+        return;
+    }
+
+    $payload = [
+        'timestamp' => (new DateTimeImmutable())->format(DateTimeInterface::ATOM),
+        'pid' => getmypid(),
+        'message' => $message,
+    ];
+
+    if ($context !== []) {
+        $payload['context'] = $context;
+    }
+
+    error_log('[realPMS] ' . json_encode($payload, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE));
+}
+
+function debugBacktraceSummary(int $limit = 5): array
+{
+    $trace = debug_backtrace(DEBUG_BACKTRACE_IGNORE_ARGS);
+    $summary = [];
+
+    foreach (array_slice($trace, 1, $limit) as $frame) {
+        $location = ($frame['file'] ?? '[internal]') . ':' . ($frame['line'] ?? '?');
+        $callable = ($frame['class'] ?? '') . ($frame['type'] ?? '') . ($frame['function'] ?? '');
+        $summary[] = trim($location . ' ' . $callable);
+    }
+
+    return $summary;
 }
 
 function jsonResponse($payload, int $status = 200): void

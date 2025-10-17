@@ -306,13 +306,18 @@ function getReservationCalendarLabel(reservation, labelMode = 'guest') {
 async function apiFetch(path, options = {}) {
     const { skipAuth = false } = options;
     const normalizedPath = path ? path.replace(/^\/+/, '') : '';
-    const url = normalizedPath ? `${API_BASE}/${normalizedPath}` : API_BASE;
+    const baseUrl = normalizedPath ? `${API_BASE}/${normalizedPath}` : API_BASE;
+    let url = baseUrl;
     const headers = new Headers(options.headers || {});
     if (!skipAuth) {
         if (!requireToken()) {
             throw new Error('Kein API-Token gesetzt.');
         }
         headers.set('X-API-Key', state.token);
+        if (state.token) {
+            const separator = baseUrl.includes('?') ? '&' : '?';
+            url = `${baseUrl}${separator}token=${encodeURIComponent(state.token)}`;
+        }
     }
     if (options.body && !headers.has('Content-Type')) {
         headers.set('Content-Type', 'application/json');
