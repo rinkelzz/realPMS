@@ -67,7 +67,6 @@ Neben der reinen API steht jetzt ein leichtgewichtiger Administrations-Client zu
 - Öffnest du eine bestehende Reservierung, zeigt der Formularheader die neue fortlaufende Reservierungsnummer (`RES-000001`, `RES-000002`, …) sowie Schnellaktionen für „Rechnung erstellen“ und „Als bezahlt verbuchen“. Der PDF-Link steht nach der ersten Rechnung direkt bereit.
 - Der Fakturierungsbereich enthält ein Artikel-Panel samt CRUD-Funktionalität, eine Rechnungsmaske mit MwSt.-Berechnung sowie Direktlinks zum PDF-Export.
 - Unter „Einstellungen“ lässt sich das Rechnungslogo als PNG/JPEG hochladen; die Vorschau zeigt unmittelbar das spätere Layout auf der Rechnung.
-- Der Bereich „Raten“ kombiniert Rate-Pläne, Stornobedingungen und Ratenkalender: Jahres- und Monatsansichten visualisieren Wochenendaufschläge, An-/Abreisesperren sowie Basispreise; Preiszeiträume lassen sich per Dialog oder Batch-Update-Tool (inkl. Wochenendfilter) pflegen.
 
 ## REST API für den MVP-Funktionsumfang
 
@@ -108,15 +107,6 @@ Nach dem erfolgreichen Datenbank-Setup stellt `backend/api/index.php` eine schla
   - **Wichtig:** Lade die Standard-Schriftdateien der FPDF-Library (z. B. `helvetica.php`, `courier.php`) manuell in `backend/lib/font/` hoch; sie sind aus lizenzrechtlichen Gründen nicht im Repository enthalten.
 - `GET|POST|PATCH|DELETE /backend/api/articles` – Verwalte abrechenbare Artikel (z. B. Frühstück, Parkplatz). Die Felder `charge_scheme`, `unit_price` und `tax_rate` sorgen dafür, dass Mehrwertsteuer nach deutschem Recht (Standard 19 %, optional z. B. 7 %) korrekt in Rechnungen einfließt.
 
-### Raten & Stornobedingungen
-- `GET|POST|PATCH|DELETE /backend/api/rate-plans` – Rate-Pläne mit Basispreis, Währung sowie optionalem Standardtext für Stornobedingungen. Über das Feld `cancellation_policy_id` verknüpfst du strukturierte Regeln.
-- `GET|POST|PATCH|DELETE /backend/api/cancellation-policies` – Verwaltet benannte Stornobedingungen inkl. Freinächte, Prozent-/Fix-/Nächte-Strafen; werden in Rate-Plänen und Ratenkalendern referenziert.
-- `GET|POST|PATCH|DELETE /backend/api/rate-calendars` – Gruppiert Preisregeln pro Rate-Plan (z. B. „Sommer Promo“). `rate_plan_id` ist Pflicht; Löschen cascadiert auf zugehörige Regeln.
-- `GET|POST /backend/api/rate-calendars/{calendar}/rules` – Einzelne Preisperioden mit optionalem Wochen-Tag-Filter, Sperren für An-/Abreisen und individualisierten Stornobedingungen.
-- `POST /backend/api/rate-calendars/{calendar}/rules/batch` – Legt mehrere Perioden auf einmal an (optional monatsweise gesplittet). Das Feld `weekend_only` erzeugt automatisch ein Wochenende-Muster (`Sa/So`).
-- `GET|PATCH|DELETE /backend/api/rate-calendar-rules/{id}` – Direkter Zugriff auf eine Regel; Änderungen validieren Datumsgrenzen und Wochentagsangaben.
-- `GET /backend/api/rate-plans/{id}/calendar?year=2025` – Liefert den aggregierten Tageskalender für UI-Darstellungen (Preis, Kalendername, Stornobedingung, Wochenendflag).
-
 ### Berichte & Analytics
 - `GET /backend/api/reports/occupancy?start=2024-02-01&end=2024-02-07` – Tagesbasierte Auslastungsquote.
 - `GET /backend/api/reports/revenue?start=2024-02-01&end=2024-02-29` – Umsatzübersicht inkl. Steuern und Zahlungsarten.
@@ -141,13 +131,3 @@ Nach dem erfolgreichen Datenbank-Setup stellt `backend/api/index.php` eine schla
 - `POST /backend/api/guest-portal/reservations/{confirmation}/upsell` – Gäste buchen Zusatzleistungen, die als `service_orders` im Backoffice landen.
 
 > Tipp: Für lokale Tests bietet sich `php -S 0.0.0.0:8000 -t backend` an. Die API ist dann unter `http://localhost:8000/api/index.php/...` erreichbar.
-
-## Tests
-
-Starte die Raten-Hilfsfunktionen-Tests mit
-
-```bash
-php backend/tests/rate_calendar_helpers.test.php
-```
-
-Die Assertions prüfen u. a. die korrekte Serialisierung von Wochentagen, Wochenendkennzeichnungen und Batch-Perioden.

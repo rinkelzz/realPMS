@@ -132,24 +132,6 @@ try {
 }
 
 try {
-    if (!columnExists($pdo, 'rate_plans', 'cancellation_policy_id')) {
-        $pdo->exec('ALTER TABLE rate_plans ADD COLUMN cancellation_policy_id BIGINT UNSIGNED NULL AFTER cancellation_policy');
-        $results[] = '✓ Added column `cancellation_policy_id` to `rate_plans`';
-    } else {
-        $results[] = '• Column `cancellation_policy_id` already present on `rate_plans`';
-    }
-
-    if (!foreignKeyExists($pdo, 'rate_plans', 'fk_rate_plans_cancellation_policy')) {
-        $pdo->exec('ALTER TABLE rate_plans ADD CONSTRAINT fk_rate_plans_cancellation_policy FOREIGN KEY (cancellation_policy_id) REFERENCES cancellation_policies(id) ON DELETE SET NULL');
-        $results[] = '✓ Added foreign key `fk_rate_plans_cancellation_policy`';
-    } else {
-        $results[] = '• Foreign key `fk_rate_plans_cancellation_policy` already present';
-    }
-} catch (PDOException $exception) {
-    respond('Error updating rate plan cancellation policy link: ' . $exception->getMessage(), true, $results);
-}
-
-try {
     $results[] = ensureSequenceSeed($pdo, 'sequence_reservation', 'reservations');
     $results[] = ensureSequenceSeed($pdo, 'sequence_invoice', 'invoices');
     $results[] = ensureSequenceSeed($pdo, 'sequence_invoice_correction', 'invoices');
@@ -405,18 +387,6 @@ function getSchemaStatements(): array
                 CONSTRAINT fk_rooms_room_type FOREIGN KEY (room_type_id) REFERENCES room_types(id)
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
         SQL,
-        'cancellation_policies' => <<<'SQL'
-            CREATE TABLE IF NOT EXISTS cancellation_policies (
-                id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
-                name VARCHAR(150) NOT NULL,
-                description TEXT NULL,
-                free_until_days SMALLINT UNSIGNED NULL,
-                penalty_type ENUM('percent','fixed','nights') NOT NULL DEFAULT 'percent',
-                penalty_value DECIMAL(10,2) NOT NULL DEFAULT 0,
-                created_at TIMESTAMP NULL,
-                updated_at TIMESTAMP NULL
-            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-        SQL,
         'rate_plans' => <<<'SQL'
             CREATE TABLE IF NOT EXISTS rate_plans (
                 id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
@@ -425,39 +395,8 @@ function getSchemaStatements(): array
                 base_price DECIMAL(10,2) NOT NULL DEFAULT 0,
                 currency CHAR(3) NOT NULL DEFAULT 'EUR',
                 cancellation_policy TEXT NULL,
-                cancellation_policy_id BIGINT UNSIGNED NULL,
                 created_at TIMESTAMP NULL,
-                updated_at TIMESTAMP NULL,
-                CONSTRAINT fk_rate_plans_cancellation_policy FOREIGN KEY (cancellation_policy_id) REFERENCES cancellation_policies(id) ON DELETE SET NULL
-            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-        SQL,
-        'rate_calendars' => <<<'SQL'
-            CREATE TABLE IF NOT EXISTS rate_calendars (
-                id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
-                rate_plan_id BIGINT UNSIGNED NOT NULL,
-                name VARCHAR(150) NOT NULL,
-                description TEXT NULL,
-                created_at TIMESTAMP NULL,
-                updated_at TIMESTAMP NULL,
-                CONSTRAINT fk_rate_calendars_plan FOREIGN KEY (rate_plan_id) REFERENCES rate_plans(id) ON DELETE CASCADE
-            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-        SQL,
-        'rate_calendar_rules' => <<<'SQL'
-            CREATE TABLE IF NOT EXISTS rate_calendar_rules (
-                id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
-                rate_calendar_id BIGINT UNSIGNED NOT NULL,
-                start_date DATE NOT NULL,
-                end_date DATE NOT NULL,
-                price DECIMAL(10,2) NULL,
-                weekdays VARCHAR(32) NULL,
-                cancellation_policy_id BIGINT UNSIGNED NULL,
-                closed_for_arrival TINYINT(1) NOT NULL DEFAULT 0,
-                closed_for_departure TINYINT(1) NOT NULL DEFAULT 0,
-                created_at TIMESTAMP NULL,
-                updated_at TIMESTAMP NULL,
-                CONSTRAINT fk_rate_calendar_rules_calendar FOREIGN KEY (rate_calendar_id) REFERENCES rate_calendars(id) ON DELETE CASCADE,
-                CONSTRAINT fk_rate_calendar_rules_policy FOREIGN KEY (cancellation_policy_id) REFERENCES cancellation_policies(id) ON DELETE SET NULL,
-                INDEX idx_rate_calendar_rules_period (rate_calendar_id, start_date, end_date)
+                updated_at TIMESTAMP NULL
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
         SQL,
         'articles' => <<<'SQL'
