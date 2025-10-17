@@ -91,6 +91,9 @@ const guestSearchResults = document.getElementById('guest-search-results');
 const guestClearSelectionButton = document.getElementById('guest-clear-selection');
 const reservationGuestCompanySelect = reservationForm ? reservationForm.querySelector('select[name="guest_company"]') : null;
 const reservationArticleContainer = document.getElementById('reservation-article-options');
+const reservationRatePlanSelect = reservationForm ? reservationForm.querySelector('select[name="rate_plan_id"]') : null;
+const reservationNightlyRateInput = reservationForm ? reservationForm.querySelector('input[name="nightly_rate"]') : null;
+const reservationTotalAmountInput = reservationForm ? reservationForm.querySelector('input[name="total_amount"]') : null;
 const roomRequestList = document.getElementById('reservation-room-requests');
 const roomRequestTypeSelect = document.getElementById('reservation-room-request-type');
 const roomRequestQuantityInput = document.getElementById('reservation-room-request-quantity');
@@ -126,6 +129,8 @@ const removeInvoiceLogoButton = document.getElementById('remove-invoice-logo');
 
 let guestLookupDebounceId = null;
 let guestLookupRequestId = 0;
+let reservationPricingOverride = null;
+let isSyncingPricingFields = false;
 
 const RESERVATION_STATUS_LABELS = {
     tentative: 'Voranfrage',
@@ -758,6 +763,121 @@ function getRoomTypeById(roomTypeId) {
     return state.roomTypes.find((type) => Number(type.id) === Number(roomTypeId)) || null;
 }
 
+function getRatePlanById(ratePlanId) {
+    return state.ratePlans.find((plan) => Number(plan.id) === Number(ratePlanId)) || null;
+}
+
+function getReservationRoomCount(requests = state.pendingRoomRequests) {
+    if (!Array.isArray(requests)) {
+        return 0;
+    }
+    return requests.reduce((total, request) => {
+        const quantity = Number(request?.quantity ?? 0);
+        if (Number.isFinite(quantity) && quantity > 0) {
+            return total + quantity;
+        }
+        return total;
+    }, 0);
+}
+
+function calculateNightsBetween(checkInValue, checkOutValue) {
+    const checkIn = parseISODate(checkInValue);
+    const checkOut = parseISODate(checkOutValue);
+    if (!checkIn || !checkOut) {
+        return 0;
+    }
+    const diff = Math.round((checkOut.getTime() - checkIn.getTime()) / (1000 * 60 * 60 * 24));
+    return diff > 0 ? diff : 0;
+}
+
+function populateRatePlanSelect() {
+    if (!reservationRatePlanSelect) {
+        return;
+    }
+    const previousValue = reservationRatePlanSelect.value;
+    const options = state.ratePlans.map((plan) => {
+        const labelParts = [plan.name || `Rate ${plan.id}`];
+        if (plan.base_price !== null && plan.base_price !== undefined) {
+            const currency = plan.currency || 'EUR';
+            labelParts.push(`(${formatCurrency(plan.base_price, currency)}/Nacht)`);
+        }
+        return `<option value="${plan.id}">${labelParts.join(' ')}</option>`;
+    });
+    reservationRatePlanSelect.innerHTML = `<option value="">Keine Rate</option>${options.join('')}`;
+    if (previousValue && state.ratePlans.some((plan) => String(plan.id) === previousValue)) {
+        reservationRatePlanSelect.value = previousValue;
+    }
+}
+
+function updateReservationPricing() {
+    if (!reservationForm || !reservationNightlyRateInput || !reservationTotalAmountInput) {
+        return;
+    }
+    const nights = calculateNightsBetween(reservationForm.check_in?.value, reservationForm.check_out?.value);
+    const roomCount = getReservationRoomCount();
+    const multiplier = nights > 0 && roomCount > 0 ? nights * roomCount : 0;
+    const selectedPlanId = reservationRatePlanSelect && reservationRatePlanSelect.value
+        ? Number(reservationRatePlanSelect.value)
+        : null;
+    const selectedPlan = selectedPlanId ? getRatePlanById(selectedPlanId) : null;
+
+    const currentNightly = parseFloat(reservationNightlyRateInput.value);
+    const currentTotal = parseFloat(reservationTotalAmountInput.value);
+    let nightlyValue = Number.isFinite(currentNightly) ? currentNightly : NaN;
+    let totalValue = Number.isFinite(currentTotal) ? currentTotal : NaN;
+
+    if (reservationPricingOverride === 'nightly') {
+        nightlyValue = Number.isFinite(currentNightly) ? currentNightly : NaN;
+        if (multiplier > 0 && Number.isFinite(nightlyValue)) {
+            totalValue = nightlyValue * multiplier;
+        }
+    } else if (reservationPricingOverride === 'total') {
+        totalValue = Number.isFinite(currentTotal) ? currentTotal : NaN;
+        if (multiplier > 0 && Number.isFinite(totalValue)) {
+            nightlyValue = totalValue / multiplier;
+        }
+    } else {
+        if (!Number.isFinite(nightlyValue) || nightlyValue <= 0) {
+            if (selectedPlan && selectedPlan.base_price !== undefined && selectedPlan.base_price !== null) {
+                nightlyValue = Number(selectedPlan.base_price);
+            }
+        }
+        if (multiplier > 0 && Number.isFinite(nightlyValue) && nightlyValue >= 0) {
+            totalValue = nightlyValue * multiplier;
+        } else if (!Number.isFinite(totalValue) || totalValue < 0) {
+            totalValue = NaN;
+        }
+    }
+
+    isSyncingPricingFields = true;
+    if (reservationPricingOverride !== 'nightly') {
+        if (Number.isFinite(nightlyValue) && nightlyValue >= 0) {
+            reservationNightlyRateInput.value = nightlyValue.toFixed(2);
+        } else if (!reservationNightlyRateInput.value) {
+            reservationNightlyRateInput.value = '';
+        }
+    }
+
+    if (reservationPricingOverride !== 'total') {
+        if (multiplier > 0 && Number.isFinite(totalValue) && totalValue >= 0) {
+            reservationTotalAmountInput.value = totalValue.toFixed(2);
+        } else if (!reservationPricingOverride) {
+            reservationTotalAmountInput.value = '';
+        }
+    } else if (multiplier > 0 && Number.isFinite(nightlyValue) && nightlyValue >= 0) {
+        reservationNightlyRateInput.value = nightlyValue.toFixed(2);
+    }
+    isSyncingPricingFields = false;
+
+    if (selectedPlan && selectedPlan.currency && reservationForm.currency) {
+        const currentCurrency = (reservationForm.currency.value || '').trim().toUpperCase();
+        const planCurrency = String(selectedPlan.currency).trim().toUpperCase();
+        if (!currentCurrency || currentCurrency === 'EUR') {
+            reservationForm.currency.value = planCurrency || 'EUR';
+        }
+    }
+}
+
 function normalizeClientRoomRequests(requests = []) {
     const aggregated = new Map();
     requests.forEach((request) => {
@@ -782,6 +902,7 @@ function setReservationRoomRequests(requests) {
     state.pendingRoomRequests = normalizeClientRoomRequests(Array.isArray(requests) ? requests : []);
     renderReservationRoomRequests();
     updateReservationCapacityHint();
+    updateReservationPricing();
 }
 
 function addReservationRoomRequest(typeId, quantity = 1) {
@@ -798,6 +919,7 @@ function addReservationRoomRequest(typeId, quantity = 1) {
     }
     renderReservationRoomRequests();
     updateReservationCapacityHint();
+    updateReservationPricing();
 }
 
 function updateReservationRoomRequestQuantity(typeId, quantity) {
@@ -813,6 +935,7 @@ function updateReservationRoomRequestQuantity(typeId, quantity) {
     ));
     renderReservationRoomRequests();
     updateReservationCapacityHint();
+    updateReservationPricing();
 }
 
 function removeReservationRoomRequest(typeId) {
@@ -820,6 +943,7 @@ function removeReservationRoomRequest(typeId) {
     state.pendingRoomRequests = state.pendingRoomRequests.filter((entry) => Number(entry.room_type_id) !== normalizedId);
     renderReservationRoomRequests();
     updateReservationCapacityHint();
+    updateReservationPricing();
 }
 
 function calculateRoomRequestCapacityClient(requests = state.pendingRoomRequests) {
@@ -1266,6 +1390,7 @@ function resetReservationForm() {
     reservationForm.reset();
     state.editingReservationId = null;
     state.currentReservationInvoices = [];
+    reservationPricingOverride = null;
     if (reservationSummary) {
         reservationSummary.textContent = 'Neue Reservierung anlegen';
     }
@@ -1286,6 +1411,7 @@ function resetReservationForm() {
     }
     updateReservationCapacityHint();
     updateReservationMeta(null);
+    updateReservationPricing();
 }
 
 function fillReservationForm(reservation) {
@@ -1303,6 +1429,9 @@ function fillReservationForm(reservation) {
     reservationForm.currency.value = reservation.currency || 'EUR';
     reservationForm.status.value = reservation.status || 'confirmed';
     reservationForm.booked_via.value = reservation.booked_via || '';
+    if (reservationRatePlanSelect) {
+        reservationRatePlanSelect.value = reservation.rate_plan_id ? String(reservation.rate_plan_id) : '';
+    }
     const guestSnapshot = {
         id: reservation.guest_id || null,
         first_name: reservation.first_name || '',
@@ -1318,9 +1447,37 @@ function fillReservationForm(reservation) {
     const roomRequestSource = Array.isArray(reservation.room_requests) && reservation.room_requests.length
         ? reservation.room_requests
         : deriveRoomRequestsFromRooms(reservation.rooms || []);
+    if (reservationNightlyRateInput) {
+        const nights = calculateNightsBetween(reservation.check_in_date, reservation.check_out_date);
+        const requestRoomCount = getReservationRoomCount(roomRequestSource);
+        const assignedRoomCount = Array.isArray(reservation.rooms) ? reservation.rooms.length : 0;
+        const roomCountForCalc = requestRoomCount > 0 ? requestRoomCount : assignedRoomCount;
+        let nightlyRate = null;
+        if (Array.isArray(reservation.rooms)) {
+            const roomWithRate = reservation.rooms.find((room) => Number(room.nightly_rate) > 0);
+            if (roomWithRate) {
+                nightlyRate = Number(roomWithRate.nightly_rate);
+            }
+        }
+        if (!Number.isFinite(nightlyRate) || nightlyRate <= 0) {
+            const selectedPlan = reservation.rate_plan_id ? getRatePlanById(reservation.rate_plan_id) : null;
+            if (selectedPlan && selectedPlan.base_price !== undefined && selectedPlan.base_price !== null) {
+                nightlyRate = Number(selectedPlan.base_price);
+            }
+        }
+        if ((!Number.isFinite(nightlyRate) || nightlyRate <= 0) && Number.isFinite(Number(reservation.total_amount))) {
+            const multiplier = nights > 0 ? nights * Math.max(roomCountForCalc || 1, 1) : 0;
+            if (multiplier > 0) {
+                nightlyRate = Number(reservation.total_amount) / multiplier;
+            }
+        }
+        reservationNightlyRateInput.value = Number.isFinite(nightlyRate) && nightlyRate >= 0 ? nightlyRate.toFixed(2) : '';
+    }
+    reservationPricingOverride = null;
     setReservationRoomRequests(roomRequestSource);
     updateReservationCapacityHint();
     updateReservationMeta(reservation);
+    updateReservationPricing();
 }
 
 function formatReservationAssignment(row) {
@@ -1971,6 +2128,8 @@ async function ensureReservationReferenceData(force = false) {
 
     populateRoomOptions();
     populateRoomTypeSelects();
+    populateRatePlanSelect();
+    updateReservationPricing();
 }
 
 function populateRoleCheckboxes() {
@@ -2497,6 +2656,10 @@ if (reservationForm) {
             booked_via: reservationForm.booked_via.value || null,
         };
 
+        if (reservationRatePlanSelect) {
+            payload.rate_plan_id = reservationRatePlanSelect.value ? Number(reservationRatePlanSelect.value) : null;
+        }
+
         if (requests.length) {
             payload.room_requests = requests.map((request) => ({
                 room_type_id: Number(request.room_type_id),
@@ -2571,6 +2734,61 @@ if (reservationForm) {
 if (reservationCancelButton) {
     reservationCancelButton.addEventListener('click', () => {
         resetReservationForm();
+    });
+}
+
+if (reservationRatePlanSelect) {
+    reservationRatePlanSelect.addEventListener('change', () => {
+        reservationPricingOverride = null;
+        if (reservationNightlyRateInput) {
+            reservationNightlyRateInput.value = '';
+        }
+        if (reservationTotalAmountInput) {
+            reservationTotalAmountInput.value = '';
+        }
+        updateReservationPricing();
+    });
+}
+
+if (reservationForm?.check_in) {
+    reservationForm.check_in.addEventListener('change', updateReservationPricing);
+    reservationForm.check_in.addEventListener('input', updateReservationPricing);
+}
+
+if (reservationForm?.check_out) {
+    reservationForm.check_out.addEventListener('change', updateReservationPricing);
+    reservationForm.check_out.addEventListener('input', updateReservationPricing);
+}
+
+if (reservationNightlyRateInput) {
+    reservationNightlyRateInput.addEventListener('input', () => {
+        if (isSyncingPricingFields) {
+            return;
+        }
+        const hasValue = reservationNightlyRateInput.value.trim() !== '';
+        reservationPricingOverride = hasValue ? 'nightly' : null;
+        updateReservationPricing();
+    });
+    reservationNightlyRateInput.addEventListener('change', () => {
+        if (!isSyncingPricingFields) {
+            updateReservationPricing();
+        }
+    });
+}
+
+if (reservationTotalAmountInput) {
+    reservationTotalAmountInput.addEventListener('input', () => {
+        if (isSyncingPricingFields) {
+            return;
+        }
+        const hasValue = reservationTotalAmountInput.value.trim() !== '';
+        reservationPricingOverride = hasValue ? 'total' : null;
+        updateReservationPricing();
+    });
+    reservationTotalAmountInput.addEventListener('change', () => {
+        if (!isSyncingPricingFields) {
+            updateReservationPricing();
+        }
     });
 }
 
