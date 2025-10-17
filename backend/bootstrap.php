@@ -84,6 +84,7 @@ function db(): PDO
 {
     static $pdo;
     if ($pdo instanceof PDO) {
+        $GLOBALS['__realpms_pdo'] = $pdo;
         return $pdo;
     }
 
@@ -94,11 +95,32 @@ function db(): PDO
         PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
     ]);
 
+    $GLOBALS['__realpms_pdo'] = $pdo;
+
     return $pdo;
+}
+
+function rollbackActiveTransaction(): void
+{
+    if (!isset($GLOBALS['__realpms_pdo']) || !$GLOBALS['__realpms_pdo'] instanceof PDO) {
+        return;
+    }
+
+    /** @var PDO $pdo */
+    $pdo = $GLOBALS['__realpms_pdo'];
+    if ($pdo->inTransaction()) {
+        try {
+            $pdo->rollBack();
+        } catch (Throwable $exception) {
+            // Ignore rollback failures so the original response can continue.
+        }
+    }
 }
 
 function jsonResponse($payload, int $status = 200): void
 {
+    rollbackActiveTransaction();
+
     http_response_code($status);
     header('Content-Type: application/json');
     echo json_encode($payload, JSON_PRETTY_PRINT);
