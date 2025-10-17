@@ -1990,10 +1990,28 @@ function populateRoleCheckboxes() {
     });
 }
 
+function formatOccupancyRange(row) {
+    const base = Number(row?.base_occupancy ?? 0);
+    const max = Number(row?.max_occupancy ?? 0);
+    if (base > 0 && max > 0) {
+        if (base === max) {
+            return `${base} Gäste`;
+        }
+        return `${base}–${max} Gäste`;
+    }
+    if (max > 0) {
+        return `${max} Gäste`;
+    }
+    if (base > 0) {
+        return `${base} Gäste`;
+    }
+    return '—';
+}
+
 function populateRoomTypeList() {
     renderTable('room-types-list', [
         { key: 'name', label: 'Name' },
-        { key: 'base_rate', label: 'Grundpreis', render: (row) => formatCurrency(row.base_rate, row.currency || 'EUR') },
+        { key: 'occupancy', label: 'Belegung (Basis/Max)', render: formatOccupancyRange },
     ], state.roomTypes);
 }
 
@@ -2764,9 +2782,26 @@ document.getElementById('room-type-form').addEventListener('submit', async (even
         return;
     }
     const form = event.target;
+    const baseOccupancyValue = Number(form.base_occupancy.value);
+    const maxOccupancyValue = Number(form.max_occupancy.value);
+    if (!Number.isFinite(baseOccupancyValue) || baseOccupancyValue <= 0) {
+        showMessage('Basisbelegung muss größer als 0 sein.', 'error');
+        return;
+    }
+    if (!Number.isFinite(maxOccupancyValue) || maxOccupancyValue <= 0) {
+        showMessage('Maximalbelegung muss größer als 0 sein.', 'error');
+        return;
+    }
+    const baseOccupancy = Math.max(1, Math.round(baseOccupancyValue));
+    const maxOccupancy = Math.max(1, Math.round(maxOccupancyValue));
+    if (baseOccupancy > maxOccupancy) {
+        showMessage('Basisbelegung darf die Maximalbelegung nicht überschreiten.', 'error');
+        return;
+    }
     const payload = {
         name: form.name.value,
-        base_rate: form.base_price.value ? Number(form.base_price.value) : null,
+        base_occupancy: baseOccupancy,
+        max_occupancy: maxOccupancy,
         description: form.description.value || null,
     };
     try {
@@ -2775,6 +2810,8 @@ document.getElementById('room-type-form').addEventListener('submit', async (even
             body: JSON.stringify(payload),
         });
         form.reset();
+        form.base_occupancy.value = '1';
+        form.max_occupancy.value = '1';
         showMessage('Zimmerkategorie erstellt.', 'success');
         const roomTypes = await apiFetch('room-types');
         state.roomTypes = roomTypes;
