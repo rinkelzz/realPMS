@@ -24,6 +24,7 @@
     <button type="button" data-section="dashboard" class="active">Dashboard</button>
     <button type="button" data-section="reservations">Reservierungen</button>
     <button type="button" data-section="rooms">Zimmer</button>
+    <button type="button" data-section="rates">Raten</button>
     <button type="button" data-section="housekeeping">Housekeeping</button>
     <button type="button" data-section="billing">Fakturierung</button>
     <button type="button" data-section="reports">Berichte</button>
@@ -265,8 +266,16 @@
                 </form>
                 <div id="room-types-list" class="table-wrapper small"></div>
             </div>
+        </div>
+    </section>
+
+    <section id="rates" data-section>
+        <div class="section-layout">
             <div class="panel">
-                <h3>Rate-Pläne</h3>
+                <div class="panel-header">
+                    <h2>Rate-Pläne</h2>
+                    <button type="button" id="reload-rate-plans" class="secondary">Neu laden</button>
+                </div>
                 <form id="rate-plan-form" class="stacked-form">
                     <label>Name
                         <input type="text" name="name" required>
@@ -277,12 +286,84 @@
                     <label>Währung
                         <input type="text" name="currency" value="EUR" maxlength="3">
                     </label>
-                    <label>Stornobedingungen
+                    <label>Standard-Stornobedingung
+                        <select name="cancellation_policy_id">
+                            <option value="">Keine Vorgabe</option>
+                        </select>
+                    </label>
+                    <label>Zusätzliche Hinweise
                         <textarea name="cancellation_policy" rows="2"></textarea>
                     </label>
-                    <button type="submit">Rate-Plan erstellen</button>
+                    <div class="form-actions">
+                        <button type="submit">Rate-Plan speichern</button>
+                        <button type="button" id="rate-plan-cancel-edit" class="secondary hidden">Abbrechen</button>
+                    </div>
                 </form>
                 <div id="rate-plans-list" class="table-wrapper small"></div>
+            </div>
+            <div class="panel">
+                <div class="panel-header">
+                    <h3>Stornobedingungen</h3>
+                    <button type="button" id="reload-cancellation-policies" class="secondary">Neu laden</button>
+                </div>
+                <form id="cancellation-policy-form" class="stacked-form">
+                    <label>Name
+                        <input type="text" name="name" required>
+                    </label>
+                    <label>Kulanz (Tage vor Anreise)
+                        <input type="number" name="free_until_days" min="0" step="1">
+                    </label>
+                    <label>Gebührentyp
+                        <select name="penalty_type">
+                            <option value="percent">Prozentual</option>
+                            <option value="fixed">Fester Betrag</option>
+                            <option value="nights">Nächte</option>
+                        </select>
+                    </label>
+                    <label>Gebührenwert
+                        <input type="number" name="penalty_value" min="0" step="0.01" value="0">
+                    </label>
+                    <label>Beschreibung
+                        <textarea name="description" rows="3"></textarea>
+                    </label>
+                    <div class="form-actions">
+                        <button type="submit">Stornobedingung speichern</button>
+                        <button type="button" id="cancellation-policy-cancel-edit" class="secondary hidden">Abbrechen</button>
+                    </div>
+                </form>
+                <div id="cancellation-policies-list" class="table-wrapper small"></div>
+            </div>
+            <div class="panel wide">
+                <div class="panel-header">
+                    <h3>Ratenkalender</h3>
+                    <div class="panel-actions">
+                        <label for="rate-calendar-plan">Rate-Plan</label>
+                        <select id="rate-calendar-plan"></select>
+                        <label for="rate-calendar-select">Kalender</label>
+                        <select id="rate-calendar-select"></select>
+                        <button type="button" id="rate-calendar-manage" class="secondary">Kalender verwalten</button>
+                        <button type="button" id="rate-calendar-add-rule">Preiszeitraum hinzufügen</button>
+                        <button type="button" id="rate-calendar-batch" class="secondary">Batch-Update</button>
+                    </div>
+                </div>
+                <p id="rate-calendar-summary" class="muted small-text"></p>
+                <div class="calendar-toggle">
+                    <button type="button" id="rate-calendar-view-year" class="secondary small active" data-view="year">Jahresansicht</button>
+                    <button type="button" id="rate-calendar-view-month" class="secondary small" data-view="month">Monatsansicht</button>
+                </div>
+                <div class="calendar-controls">
+                    <button type="button" id="rate-calendar-prev-month" class="secondary small" aria-label="Vormonat">◀</button>
+                    <span id="rate-calendar-month-label"></span>
+                    <button type="button" id="rate-calendar-next-month" class="secondary small" aria-label="Nächster Monat">▶</button>
+                    <label for="rate-calendar-year-select">Jahr</label>
+                    <select id="rate-calendar-year-select"></select>
+                </div>
+                <div id="rate-calendar-year" class="rate-calendar-year"></div>
+                <div id="rate-calendar-month" class="rate-calendar-month hidden"></div>
+                <div class="panel-subsection">
+                    <h4>Aktive Preisregeln</h4>
+                    <div id="rate-calendar-rules" class="table-wrapper small"></div>
+                </div>
             </div>
         </div>
     </section>
@@ -676,6 +757,128 @@
         </div>
     </section>
 </main>
+<dialog id="rate-calendar-dialog" class="modal">
+    <form id="rate-calendar-modal-form" class="stacked-form" novalidate>
+        <h3 id="rate-calendar-dialog-title">Ratenkalender</h3>
+        <label>Rate-Plan
+            <select name="rate_plan_id" required></select>
+        </label>
+        <label>Name
+            <input type="text" name="name" required>
+        </label>
+        <label>Beschreibung
+            <textarea name="description" rows="3"></textarea>
+        </label>
+        <div class="form-actions">
+            <button type="submit">Speichern</button>
+            <button type="button" id="rate-calendar-delete" class="danger hidden">Kalender löschen</button>
+            <button type="button" data-action="cancel" class="secondary">Abbrechen</button>
+        </div>
+    </form>
+</dialog>
+<dialog id="rate-rule-dialog" class="modal">
+    <form id="rate-rule-form" class="stacked-form" novalidate>
+        <h3 id="rate-rule-dialog-title">Preiszeitraum</h3>
+        <input type="hidden" name="rule_id">
+        <label>Gültig ab
+            <input type="date" name="start_date" required>
+        </label>
+        <label>Gültig bis
+            <input type="date" name="end_date" required>
+        </label>
+        <label>Preis (pro Nacht)
+            <input type="number" name="price" min="0" step="0.01" required>
+            <span class="muted small-text" data-price-hint></span>
+        </label>
+        <label>Stornobedingung
+            <select name="cancellation_policy_id">
+                <option value="">Rate-Plan-Standard</option>
+            </select>
+        </label>
+        <fieldset class="weekday-grid">
+            <legend>Wochentage</legend>
+            <div class="weekday-options">
+                <label><input type="checkbox" name="weekdays" value="1"> Mo</label>
+                <label><input type="checkbox" name="weekdays" value="2"> Di</label>
+                <label><input type="checkbox" name="weekdays" value="3"> Mi</label>
+                <label><input type="checkbox" name="weekdays" value="4"> Do</label>
+                <label><input type="checkbox" name="weekdays" value="5"> Fr</label>
+                <label><input type="checkbox" name="weekdays" value="6"> Sa</label>
+                <label><input type="checkbox" name="weekdays" value="0"> So</label>
+            </div>
+            <p class="muted small-text">Keine Auswahl bedeutet, dass alle Tage gelten.</p>
+        </fieldset>
+        <fieldset class="grid-two">
+            <label class="checkbox-inline">
+                <input type="checkbox" name="closed_for_arrival">
+                Anreise sperren
+            </label>
+            <label class="checkbox-inline">
+                <input type="checkbox" name="closed_for_departure">
+                Abreise sperren
+            </label>
+        </fieldset>
+        <div class="form-actions">
+            <button type="submit">Speichern</button>
+            <button type="button" id="rate-rule-delete" class="danger hidden">Regel löschen</button>
+            <button type="button" data-action="cancel" class="secondary">Abbrechen</button>
+        </div>
+    </form>
+</dialog>
+<dialog id="rate-batch-dialog" class="modal">
+    <form id="rate-batch-form" class="stacked-form" novalidate>
+        <h3>Batch-Update</h3>
+        <label>Startdatum
+            <input type="date" name="start_date" required>
+        </label>
+        <label>Enddatum
+            <input type="date" name="end_date" required>
+        </label>
+        <label>Preis (pro Nacht)
+            <input type="number" name="price" min="0" step="0.01" required>
+            <span class="muted small-text" data-price-hint></span>
+        </label>
+        <label>Stornobedingung
+            <select name="cancellation_policy_id">
+                <option value="">Rate-Plan-Standard</option>
+            </select>
+        </label>
+        <fieldset class="weekday-grid">
+            <legend>Wochentage einschränken</legend>
+            <div class="weekday-options">
+                <label><input type="checkbox" name="weekdays" value="1"> Mo</label>
+                <label><input type="checkbox" name="weekdays" value="2"> Di</label>
+                <label><input type="checkbox" name="weekdays" value="3"> Mi</label>
+                <label><input type="checkbox" name="weekdays" value="4"> Do</label>
+                <label><input type="checkbox" name="weekdays" value="5"> Fr</label>
+                <label><input type="checkbox" name="weekdays" value="6"> Sa</label>
+                <label><input type="checkbox" name="weekdays" value="0"> So</label>
+            </div>
+            <label class="checkbox-inline">
+                <input type="checkbox" name="weekend_only">
+                Nur Wochenenden (Sa/So)
+            </label>
+        </fieldset>
+        <fieldset class="grid-two">
+            <label class="checkbox-inline">
+                <input type="checkbox" name="split_by_month">
+                Nach Monaten aufteilen
+            </label>
+            <label class="checkbox-inline">
+                <input type="checkbox" name="closed_for_arrival">
+                Anreise sperren
+            </label>
+            <label class="checkbox-inline">
+                <input type="checkbox" name="closed_for_departure">
+                Abreise sperren
+            </label>
+        </fieldset>
+        <div class="form-actions">
+            <button type="submit">Übernehmen</button>
+            <button type="button" data-action="cancel" class="secondary">Abbrechen</button>
+        </div>
+    </form>
+</dialog>
 <footer class="app-footer">
     <p>realPMS Prototype &mdash; Demonstrationsoberfläche</p>
 </footer>

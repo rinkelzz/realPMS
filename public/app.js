@@ -18,6 +18,14 @@ const ARTICLE_SCHEME_LABELS = {
     per_day: 'pro Tag',
 };
 
+const CANCELLATION_PENALTY_LABELS = {
+    percent: 'Prozentual',
+    fixed: 'Fester Betrag',
+    nights: 'Nächte',
+};
+
+const WEEKDAY_LABELS = ['So', 'Mo', 'Di', 'Mi', 'Do', 'Fr', 'Sa'];
+
 const RESERVATION_STATUS_ACTIONS = [
     { status: 'checked_in', label: 'Check-in', title: 'Gast als angereist markieren' },
     { status: 'paid', label: 'Bezahlt', title: 'Zahlung als erhalten markieren' },
@@ -29,6 +37,7 @@ const state = {
     token: null,
     roomTypes: [],
     ratePlans: [],
+    ratePlansLoaded: false,
     rooms: [],
     reservations: [],
     roles: [],
@@ -41,6 +50,10 @@ const state = {
     editingGuestId: null,
     editingCompanyId: null,
     editingArticleId: null,
+    editingRatePlanId: null,
+    editingCancellationPolicyId: null,
+    editingRateCalendarId: null,
+    editingRateRuleId: null,
     loadedSections: new Set(),
     calendarLabelMode: 'guest',
     calendarColors: { ...CALENDAR_COLOR_DEFAULTS },
@@ -53,6 +66,16 @@ const state = {
     guestLookupResults: [],
     guestLookupTerm: '',
     pendingRoomRequests: [],
+    cancellationPolicies: [],
+    cancellationPoliciesLoaded: false,
+    rateCalendarsByPlan: {},
+    rateCalendarRulesByCalendar: {},
+    rateCalendarsLoaded: new Set(),
+    activeRatePlanId: null,
+    activeRateCalendarId: null,
+    rateCalendarView: 'year',
+    rateCalendarMonthCursor: new Date(),
+    rateCalendarDailyCache: {},
 };
 
 const CALENDAR_DAYS = 14;
@@ -135,6 +158,39 @@ const invoiceLogoForm = document.getElementById('invoice-logo-form');
 const invoiceLogoInput = invoiceLogoForm ? invoiceLogoForm.querySelector('input[type="file"]') : null;
 const invoiceLogoPreview = document.getElementById('invoice-logo-preview');
 const removeInvoiceLogoButton = document.getElementById('remove-invoice-logo');
+const ratePlanForm = document.getElementById('rate-plan-form');
+const ratePlanCancelButton = document.getElementById('rate-plan-cancel-edit');
+const ratePlansList = document.getElementById('rate-plans-list');
+const reloadRatePlansButton = document.getElementById('reload-rate-plans');
+const cancellationPolicyForm = document.getElementById('cancellation-policy-form');
+const cancellationPolicyCancelButton = document.getElementById('cancellation-policy-cancel-edit');
+const cancellationPoliciesList = document.getElementById('cancellation-policies-list');
+const reloadCancellationPoliciesButton = document.getElementById('reload-cancellation-policies');
+const rateCalendarPlanSelect = document.getElementById('rate-calendar-plan');
+const rateCalendarSelect = document.getElementById('rate-calendar-select');
+const rateCalendarManageButton = document.getElementById('rate-calendar-manage');
+const rateCalendarAddRuleButton = document.getElementById('rate-calendar-add-rule');
+const rateCalendarBatchButton = document.getElementById('rate-calendar-batch');
+const rateCalendarSummary = document.getElementById('rate-calendar-summary');
+const rateCalendarYearContainer = document.getElementById('rate-calendar-year');
+const rateCalendarMonthContainer = document.getElementById('rate-calendar-month');
+const rateCalendarRulesContainer = document.getElementById('rate-calendar-rules');
+const rateCalendarViewYearButton = document.getElementById('rate-calendar-view-year');
+const rateCalendarViewMonthButton = document.getElementById('rate-calendar-view-month');
+const rateCalendarPrevMonthButton = document.getElementById('rate-calendar-prev-month');
+const rateCalendarNextMonthButton = document.getElementById('rate-calendar-next-month');
+const rateCalendarMonthLabel = document.getElementById('rate-calendar-month-label');
+const rateCalendarYearSelect = document.getElementById('rate-calendar-year-select');
+const rateCalendarDialog = document.getElementById('rate-calendar-dialog');
+const rateCalendarModalForm = document.getElementById('rate-calendar-modal-form');
+const rateCalendarDialogTitle = document.getElementById('rate-calendar-dialog-title');
+const rateCalendarDeleteButton = document.getElementById('rate-calendar-delete');
+const rateRuleDialog = document.getElementById('rate-rule-dialog');
+const rateRuleForm = document.getElementById('rate-rule-form');
+const rateRuleDialogTitle = document.getElementById('rate-rule-dialog-title');
+const rateRuleDeleteButton = document.getElementById('rate-rule-delete');
+const rateBatchDialog = document.getElementById('rate-batch-dialog');
+const rateBatchForm = document.getElementById('rate-batch-form');
 const systemUpdateMessage = document.getElementById('system-update-message');
 const systemUpdateLog = document.getElementById('system-update-log');
 const runSystemUpdateButton = document.getElementById('run-system-update');
@@ -291,6 +347,89 @@ function formatReservationStatus(value) {
     return RESERVATION_STATUS_LABELS[normalized] || value;
 }
 
+function getRatePlanById(ratePlanId) {
+    if (!ratePlanId) {
+        return null;
+    }
+    return state.ratePlans.find((plan) => Number(plan.id) === Number(ratePlanId)) || null;
+}
+
+function getCancellationPolicyById(policyId) {
+    if (!policyId) {
+        return null;
+    }
+    return state.cancellationPolicies.find((policy) => Number(policy.id) === Number(policyId)) || null;
+}
+
+function getRateCalendarList(planId) {
+    if (!planId) {
+        return [];
+    }
+    const key = String(planId);
+    return Array.isArray(state.rateCalendarsByPlan[key]) ? state.rateCalendarsByPlan[key] : [];
+}
+
+function getRateCalendarById(planId, calendarId) {
+    if (!planId || !calendarId) {
+        return null;
+    }
+    return getRateCalendarList(planId).find((calendar) => Number(calendar.id) === Number(calendarId)) || null;
+}
+
+function normalizeWeekdayValues(values) {
+    const entries = Array.isArray(values) ? values : [];
+    const normalized = entries
+        .map((value) => Number(value))
+        .filter((value) => Number.isInteger(value) && value >= 0 && value <= 6);
+    const unique = Array.from(new Set(normalized));
+    unique.sort((a, b) => {
+        const orderA = a === 0 ? 7 : a;
+        const orderB = b === 0 ? 7 : b;
+        return orderA - orderB;
+    });
+    return unique;
+}
+
+function formatWeekdayList(weekdays) {
+    const normalized = normalizeWeekdayValues(weekdays);
+    if (!normalized.length) {
+        return 'Alle Tage';
+    }
+    return normalized.map((day) => WEEKDAY_LABELS[day] || String(day)).join(', ');
+}
+
+function formatCancellationPenalty(policy, currency = 'EUR') {
+    if (!policy) {
+        return '—';
+    }
+    const penaltyType = policy.penalty_type || 'percent';
+    const rawValue = policy.penalty_value ?? 0;
+    const value = Number(rawValue);
+    if (Number.isNaN(value)) {
+        return '—';
+    }
+    switch (penaltyType) {
+        case 'percent':
+            return `${value}%`;
+        case 'fixed':
+            return formatCurrency(value, policy.currency || currency || 'EUR');
+        case 'nights':
+            return `${value} Nacht${value === 1 ? '' : 'e'}`;
+        default:
+            return String(rawValue);
+    }
+}
+
+function updatePriceHint(container, currency = 'EUR') {
+    if (!container) {
+        return;
+    }
+    const hint = container.querySelector('[data-price-hint]');
+    if (hint) {
+        hint.textContent = currency ? `Währung: ${currency}` : '';
+    }
+}
+
 function getReservationCalendarLabel(reservation, labelMode = 'guest') {
     const guestName = `${reservation.first_name || ''} ${reservation.last_name || ''}`.trim();
     const companyName = reservation.company_name || '';
@@ -349,6 +488,7 @@ function setToken(token) {
         localStorage.removeItem('realpms_api_token');
         state.roomTypes = [];
         state.ratePlans = [];
+        state.ratePlansLoaded = false;
         state.rooms = [];
         state.reservations = [];
         state.roles = [];
@@ -358,10 +498,30 @@ function setToken(token) {
         state.editingReservationId = null;
         state.editingGuestId = null;
         state.editingCompanyId = null;
+        state.editingRatePlanId = null;
+        state.editingCancellationPolicyId = null;
+        state.editingRateCalendarId = null;
+        state.editingRateRuleId = null;
+        state.editingRateRuleId = null;
+        state.cancellationPolicies = [];
+        state.cancellationPoliciesLoaded = false;
+        state.rateCalendarsByPlan = {};
+        state.rateCalendarRulesByCalendar = {};
+        state.rateCalendarsLoaded.clear();
+        state.activeRatePlanId = null;
+        state.activeRateCalendarId = null;
+        state.rateCalendarView = 'year';
+        state.rateCalendarMonthCursor = new Date();
+        state.rateCalendarDailyCache = {};
         state.loadedSections.clear();
         state.guestLookupResults = [];
         state.guestLookupTerm = '';
         populateCompanyDropdowns();
+        resetRatePlanForm();
+        resetCancellationPolicyForm();
+        resetRateCalendarDialog();
+        resetRateRuleDialog();
+        resetRateBatchForm();
         resetReservationForm();
         resetGuestForm();
         resetCompanyForm();
@@ -2267,7 +2427,7 @@ async function bootstrap() {
         return;
     }
     try {
-        const [roomTypes, ratePlans, rooms, roles, guests, companies, articles, logoResponse] = await Promise.all([
+        const [roomTypes, ratePlans, rooms, roles, guests, companies, articles, logoResponse, cancellationPolicies] = await Promise.all([
             apiFetch('room-types'),
             apiFetch('rate-plans'),
             apiFetch('rooms'),
@@ -2276,9 +2436,11 @@ async function bootstrap() {
             apiFetch('companies'),
             apiFetch('articles?include_inactive=1'),
             apiFetch('settings/invoice-logo'),
+            apiFetch('cancellation-policies'),
         ]);
         state.roomTypes = roomTypes;
         state.ratePlans = ratePlans;
+        state.ratePlansLoaded = true;
         state.rooms = rooms;
         state.roles = roles;
         state.guests = guests;
@@ -2286,6 +2448,8 @@ async function bootstrap() {
         state.companiesLoaded = true;
         state.articles = Array.isArray(articles) ? articles : [];
         state.articlesLoaded = true;
+        state.cancellationPolicies = Array.isArray(cancellationPolicies) ? cancellationPolicies : [];
+        state.cancellationPoliciesLoaded = true;
         const logoData = logoResponse && typeof logoResponse === 'object' ? logoResponse.logo || null : null;
         updateInvoiceLogoPreview(logoData);
         await loadCalendarColors(true);
@@ -2294,6 +2458,12 @@ async function bootstrap() {
         populateRoleCheckboxes();
         populateRoomTypeList();
         populateRatePlanList();
+        populateCancellationPolicyList();
+        populateCancellationPolicySelects();
+        if (!state.activeRatePlanId && state.ratePlans.length) {
+            state.activeRatePlanId = Number(state.ratePlans[0].id);
+        }
+        populateRateCalendarPlanOptions();
         populateCompanyDropdowns();
         renderArticlesTable();
         renderGuestsTable(guests);
@@ -2306,6 +2476,7 @@ async function bootstrap() {
             loadRooms(true),
             loadHousekeeping(true),
         ]);
+        await loadRates();
     } catch (error) {
         showMessage(error.message, 'error');
     }
@@ -2375,6 +2546,12 @@ async function ensureReservationReferenceData(force = false) {
             apiFetch('rate-plans')
                 .then((ratePlans) => {
                     state.ratePlans = Array.isArray(ratePlans) ? ratePlans : [];
+                    state.ratePlansLoaded = true;
+                    if (!state.activeRatePlanId && state.ratePlans.length) {
+                        state.activeRatePlanId = Number(state.ratePlans[0].id);
+                    }
+                    populateRatePlanList();
+                    populateRateCalendarPlanOptions();
                 })
                 .catch((error) => {
                     showMessage(error.message, 'error');
@@ -2446,11 +2623,920 @@ function populateRoomTypeList() {
 }
 
 function populateRatePlanList() {
+    const rows = state.ratePlans.map((plan) => ({
+        ...plan,
+        cancellation_policy_name: plan.cancellation_policy_name || '',
+        cancellation_policy_text: plan.cancellation_policy || '',
+    }));
     renderTable('rate-plans-list', [
         { key: 'name', label: 'Name' },
         { key: 'base_price', label: 'Grundpreis', render: (row) => formatCurrency(row.base_price, row.currency || 'EUR') },
-        { key: 'cancellation_policy', label: 'Stornobedingungen' },
-    ], state.ratePlans);
+        {
+            key: 'cancellation_policy_name',
+            label: 'Stornobedingung',
+            render: (row) => {
+                const name = row.cancellation_policy_name ? escapeHtml(row.cancellation_policy_name) : '—';
+                const hint = row.cancellation_policy_text
+                    ? `<span class="table-subline">${escapeHtml(row.cancellation_policy_text)}</span>`
+                    : '';
+                return `${name}${hint}`;
+            },
+        },
+        {
+            key: 'actions',
+            label: 'Aktionen',
+            render: (row) => `
+                <div class="table-actions">
+                    <button type="button" class="secondary small" data-action="edit-rate-plan" data-id="${row.id}">Bearbeiten</button>
+                    <button type="button" class="danger small" data-action="delete-rate-plan" data-id="${row.id}">Löschen</button>
+                </div>
+            `,
+        },
+    ], rows);
+}
+
+function populateCancellationPolicySelects() {
+    const options = state.cancellationPolicies
+        .map((policy) => `<option value="${policy.id}">${escapeHtml(policy.name)}</option>`)
+        .join('');
+    if (ratePlanForm) {
+        const select = ratePlanForm.querySelector('select[name="cancellation_policy_id"]');
+        if (select) {
+            const previous = select.value;
+            select.innerHTML = `<option value="">Keine Vorgabe</option>${options}`;
+            if (previous && Array.from(select.options).some((option) => option.value === previous)) {
+                select.value = previous;
+            }
+        }
+    }
+    if (rateRuleForm) {
+        const select = rateRuleForm.querySelector('select[name="cancellation_policy_id"]');
+        if (select) {
+            const previous = select.value;
+            select.innerHTML = `<option value="">Rate-Plan-Standard</option>${options}`;
+            if (previous && Array.from(select.options).some((option) => option.value === previous)) {
+                select.value = previous;
+            }
+        }
+    }
+    if (rateBatchForm) {
+        const select = rateBatchForm.querySelector('select[name="cancellation_policy_id"]');
+        if (select) {
+            const previous = select.value;
+            select.innerHTML = `<option value="">Rate-Plan-Standard</option>${options}`;
+            if (previous && Array.from(select.options).some((option) => option.value === previous)) {
+                select.value = previous;
+            }
+        }
+    }
+}
+
+function populateCancellationPolicyList() {
+    const rows = state.cancellationPolicies.map((policy) => ({
+        ...policy,
+        free_until_days: policy.free_until_days ?? null,
+    }));
+    renderTable('cancellation-policies-list', [
+        {
+            key: 'name',
+            label: 'Name',
+            render: (row) => {
+                const description = row.description
+                    ? `<span class="table-subline">${escapeHtml(row.description)}</span>`
+                    : '';
+                return `${escapeHtml(row.name)}${description}`;
+            },
+        },
+        {
+            key: 'free_until_days',
+            label: 'Kulanz',
+            render: (row) => {
+                if (row.free_until_days === null || row.free_until_days === undefined) {
+                    return 'Keine Angabe';
+                }
+                const days = Number(row.free_until_days);
+                if (Number.isNaN(days)) {
+                    return escapeHtml(row.free_until_days);
+                }
+                if (days === 0) {
+                    return 'Keine kostenlose Storno';
+                }
+                return `${days} Tag${days === 1 ? '' : 'e'} vorher`;
+            },
+        },
+        {
+            key: 'penalty_type',
+            label: 'Gebühr',
+            render: (row) => {
+                const label = CANCELLATION_PENALTY_LABELS[row.penalty_type] || row.penalty_type;
+                const amount = formatCancellationPenalty(row);
+                return `${label}<span class="table-subline">${amount}</span>`;
+            },
+        },
+        {
+            key: 'actions',
+            label: 'Aktionen',
+            render: (row) => `
+                <div class="table-actions">
+                    <button type="button" class="secondary small" data-action="edit-cancellation-policy" data-id="${row.id}">Bearbeiten</button>
+                    <button type="button" class="danger small" data-action="delete-cancellation-policy" data-id="${row.id}">Löschen</button>
+                </div>
+            `,
+        },
+    ], rows);
+}
+
+function populateRateCalendarPlanOptions() {
+    if (!rateCalendarPlanSelect) {
+        return;
+    }
+    const options = state.ratePlans
+        .map((plan) => `<option value="${plan.id}">${escapeHtml(plan.name)}</option>`)
+        .join('');
+    if (!options) {
+        rateCalendarPlanSelect.innerHTML = '<option value="">Keine Rate-Pläne</option>';
+        state.activeRatePlanId = null;
+        return;
+    }
+    const previous = rateCalendarPlanSelect.value || (state.activeRatePlanId ? String(state.activeRatePlanId) : '');
+    rateCalendarPlanSelect.innerHTML = options;
+    const hasPrevious = previous && Array.from(rateCalendarPlanSelect.options).some((option) => option.value === previous);
+    const desired = hasPrevious
+        ? previous
+        : rateCalendarPlanSelect.options.length > 0
+            ? rateCalendarPlanSelect.options[0].value
+            : '';
+    rateCalendarPlanSelect.value = desired;
+    state.activeRatePlanId = desired ? Number(desired) : null;
+}
+
+function populateRateCalendarSelect(planId) {
+    if (!rateCalendarSelect) {
+        return;
+    }
+    const calendars = getRateCalendarList(planId);
+    if (!calendars.length) {
+        rateCalendarSelect.innerHTML = '<option value="">Kein Kalender vorhanden</option>';
+        state.activeRateCalendarId = null;
+        return;
+    }
+    const previous = rateCalendarSelect.value || (state.activeRateCalendarId ? String(state.activeRateCalendarId) : '');
+    const options = calendars.map((calendar) => `<option value="${calendar.id}">${escapeHtml(calendar.name)}</option>`).join('');
+    rateCalendarSelect.innerHTML = options;
+    const hasPrevious = previous && Array.from(rateCalendarSelect.options).some((option) => option.value === previous);
+    const desired = hasPrevious ? previous : String(calendars[0].id);
+    rateCalendarSelect.value = desired;
+    state.activeRateCalendarId = desired ? Number(desired) : null;
+}
+
+function resetRatePlanForm() {
+    if (!ratePlanForm) {
+        return;
+    }
+    ratePlanForm.reset();
+    state.editingRatePlanId = null;
+    populateCancellationPolicySelects();
+    const submitButton = ratePlanForm.querySelector('button[type="submit"]');
+    if (submitButton) {
+        submitButton.textContent = 'Rate-Plan speichern';
+    }
+    if (ratePlanCancelButton) {
+        ratePlanCancelButton.classList.add('hidden');
+    }
+}
+
+function fillRatePlanForm(plan) {
+    if (!ratePlanForm || !plan) {
+        return;
+    }
+    populateCancellationPolicySelects();
+    ratePlanForm.name.value = plan.name || '';
+    ratePlanForm.base_price.value = plan.base_price ?? '';
+    ratePlanForm.currency.value = plan.currency || 'EUR';
+    ratePlanForm.cancellation_policy.value = plan.cancellation_policy || '';
+    if (ratePlanForm.cancellation_policy_id) {
+        ratePlanForm.cancellation_policy_id.value = plan.cancellation_policy_id ? String(plan.cancellation_policy_id) : '';
+    }
+    const submitButton = ratePlanForm.querySelector('button[type="submit"]');
+    if (submitButton) {
+        submitButton.textContent = 'Rate-Plan aktualisieren';
+    }
+    if (ratePlanCancelButton) {
+        ratePlanCancelButton.classList.remove('hidden');
+    }
+    state.editingRatePlanId = Number(plan.id);
+}
+
+function resetCancellationPolicyForm(closeDialog = false) {
+    if (!cancellationPolicyForm) {
+        return;
+    }
+    cancellationPolicyForm.reset();
+    state.editingCancellationPolicyId = null;
+    const submitButton = cancellationPolicyForm.querySelector('button[type="submit"]');
+    if (submitButton) {
+        submitButton.textContent = 'Stornobedingung speichern';
+    }
+    if (cancellationPolicyCancelButton) {
+        cancellationPolicyCancelButton.classList.add('hidden');
+    }
+    if (closeDialog) {
+        const dialog = cancellationPolicyForm.closest('dialog');
+        if (dialog && dialog.open) {
+            dialog.close();
+        }
+    }
+}
+
+function fillCancellationPolicyForm(policy) {
+    if (!cancellationPolicyForm || !policy) {
+        return;
+    }
+    cancellationPolicyForm.name.value = policy.name || '';
+    cancellationPolicyForm.free_until_days.value = policy.free_until_days ?? '';
+    cancellationPolicyForm.penalty_type.value = policy.penalty_type || 'percent';
+    cancellationPolicyForm.penalty_value.value = policy.penalty_value ?? 0;
+    cancellationPolicyForm.description.value = policy.description || '';
+    const submitButton = cancellationPolicyForm.querySelector('button[type="submit"]');
+    if (submitButton) {
+        submitButton.textContent = 'Stornobedingung aktualisieren';
+    }
+    if (cancellationPolicyCancelButton) {
+        cancellationPolicyCancelButton.classList.remove('hidden');
+    }
+    state.editingCancellationPolicyId = Number(policy.id);
+}
+
+function closeDialog(dialog) {
+    if (dialog && typeof dialog.close === 'function' && dialog.open) {
+        dialog.close();
+    }
+}
+
+function resetRateCalendarDialog(close = false) {
+    if (rateCalendarModalForm) {
+        rateCalendarModalForm.reset();
+    }
+    state.editingRateCalendarId = null;
+    if (rateCalendarDialogTitle) {
+        rateCalendarDialogTitle.textContent = 'Ratenkalender';
+    }
+    if (rateCalendarDeleteButton) {
+        rateCalendarDeleteButton.classList.add('hidden');
+    }
+    populateRateCalendarPlanOptions();
+    if (rateCalendarModalForm && rateCalendarModalForm.rate_plan_id && state.activeRatePlanId) {
+        rateCalendarModalForm.rate_plan_id.value = String(state.activeRatePlanId);
+    }
+    if (close) {
+        closeDialog(rateCalendarDialog);
+    }
+}
+
+function prepareRateCalendarDialog(calendar = null) {
+    resetRateCalendarDialog(false);
+    populateRateCalendarPlanOptions();
+    if (!rateCalendarModalForm) {
+        return;
+    }
+    if (calendar) {
+        state.editingRateCalendarId = Number(calendar.id);
+        if (rateCalendarDialogTitle) {
+            rateCalendarDialogTitle.textContent = 'Kalender bearbeiten';
+        }
+        if (rateCalendarDeleteButton) {
+            rateCalendarDeleteButton.classList.remove('hidden');
+        }
+        if (rateCalendarModalForm.rate_plan_id) {
+            rateCalendarModalForm.rate_plan_id.value = calendar.rate_plan_id ? String(calendar.rate_plan_id) : '';
+        }
+        rateCalendarModalForm.name.value = calendar.name || '';
+        rateCalendarModalForm.description.value = calendar.description || '';
+    } else {
+        if (rateCalendarDialogTitle) {
+            rateCalendarDialogTitle.textContent = 'Neuer Ratenkalender';
+        }
+        if (rateCalendarDeleteButton) {
+            rateCalendarDeleteButton.classList.add('hidden');
+        }
+    }
+}
+
+function openRateCalendarDialog(calendar = null) {
+    prepareRateCalendarDialog(calendar);
+    if (rateCalendarDialog && typeof rateCalendarDialog.showModal === 'function') {
+        rateCalendarDialog.showModal();
+    }
+}
+
+function resetRateRuleDialog(close = false) {
+    if (rateRuleForm) {
+        rateRuleForm.reset();
+        rateRuleForm.querySelectorAll('input[name="weekdays"]').forEach((input) => {
+            input.checked = false;
+        });
+        rateRuleForm.rule_id.value = '';
+        if (rateRuleForm.closed_for_arrival) {
+            rateRuleForm.closed_for_arrival.checked = false;
+        }
+        if (rateRuleForm.closed_for_departure) {
+            rateRuleForm.closed_for_departure.checked = false;
+        }
+    }
+    state.editingRateRuleId = null;
+    if (rateRuleDialogTitle) {
+        rateRuleDialogTitle.textContent = 'Preiszeitraum';
+    }
+    if (rateRuleDeleteButton) {
+        rateRuleDeleteButton.classList.add('hidden');
+    }
+    if (close) {
+        closeDialog(rateRuleDialog);
+    }
+}
+
+function prepareRateRuleDialog(rule = null) {
+    resetRateRuleDialog(false);
+    populateCancellationPolicySelects();
+    if (!rateRuleForm) {
+        return;
+    }
+    const plan = getRatePlanById(state.activeRatePlanId);
+    const currency = plan?.currency || 'EUR';
+    const priceLabel = rateRuleForm.querySelector('input[name="price"]').parentElement;
+    updatePriceHint(priceLabel, currency);
+    if (rule) {
+        state.editingRateRuleId = Number(rule.id);
+        if (rateRuleDialogTitle) {
+            rateRuleDialogTitle.textContent = 'Preiszeitraum bearbeiten';
+        }
+        if (rateRuleDeleteButton) {
+            rateRuleDeleteButton.classList.remove('hidden');
+        }
+        rateRuleForm.rule_id.value = rule.id;
+        rateRuleForm.start_date.value = rule.start_date || '';
+        rateRuleForm.end_date.value = rule.end_date || '';
+        rateRuleForm.price.value = rule.price ?? '';
+        if (rateRuleForm.cancellation_policy_id) {
+            rateRuleForm.cancellation_policy_id.value = rule.cancellation_policy_id ? String(rule.cancellation_policy_id) : '';
+        }
+        const weekdays = normalizeWeekdayValues(rule.weekdays || []);
+        rateRuleForm.querySelectorAll('input[name="weekdays"]').forEach((input) => {
+            input.checked = weekdays.includes(Number(input.value));
+        });
+        if (rateRuleForm.closed_for_arrival) {
+            rateRuleForm.closed_for_arrival.checked = Boolean(rule.closed_for_arrival);
+        }
+        if (rateRuleForm.closed_for_departure) {
+            rateRuleForm.closed_for_departure.checked = Boolean(rule.closed_for_departure);
+        }
+    } else {
+        const baseDate = state.rateCalendarMonthCursor instanceof Date
+            ? new Date(state.rateCalendarMonthCursor)
+            : new Date();
+        const iso = toLocalISODate(baseDate);
+        rateRuleForm.start_date.value = iso;
+        rateRuleForm.end_date.value = iso;
+    }
+}
+
+function openRateRuleDialog(rule = null) {
+    prepareRateRuleDialog(rule);
+    if (rateRuleDialog && typeof rateRuleDialog.showModal === 'function') {
+        rateRuleDialog.showModal();
+    }
+}
+
+function resetRateBatchForm(close = false) {
+    if (rateBatchForm) {
+        rateBatchForm.reset();
+        rateBatchForm.querySelectorAll('input[name="weekdays"]').forEach((input) => {
+            input.checked = false;
+        });
+        if (rateBatchForm.weekend_only) {
+            rateBatchForm.weekend_only.checked = false;
+        }
+        if (rateBatchForm.split_by_month) {
+            rateBatchForm.split_by_month.checked = false;
+        }
+        if (rateBatchForm.closed_for_arrival) {
+            rateBatchForm.closed_for_arrival.checked = false;
+        }
+        if (rateBatchForm.closed_for_departure) {
+            rateBatchForm.closed_for_departure.checked = false;
+        }
+    }
+    if (close) {
+        closeDialog(rateBatchDialog);
+    }
+}
+
+function prepareRateBatchDialog() {
+    resetRateBatchForm(false);
+    populateCancellationPolicySelects();
+    if (!rateBatchForm) {
+        return;
+    }
+    const plan = getRatePlanById(state.activeRatePlanId);
+    const currency = plan?.currency || 'EUR';
+    const priceLabel = rateBatchForm.querySelector('input[name="price"]').parentElement;
+    updatePriceHint(priceLabel, currency);
+    const baseDate = state.rateCalendarMonthCursor instanceof Date
+        ? new Date(state.rateCalendarMonthCursor)
+        : new Date();
+    const monthStart = new Date(baseDate.getFullYear(), baseDate.getMonth(), 1);
+    const monthEnd = new Date(baseDate.getFullYear(), baseDate.getMonth() + 1, 0);
+    rateBatchForm.start_date.value = toLocalISODate(monthStart);
+    rateBatchForm.end_date.value = toLocalISODate(monthEnd);
+}
+
+function openRateBatchDialog() {
+    prepareRateBatchDialog();
+    if (rateBatchDialog && typeof rateBatchDialog.showModal === 'function') {
+        rateBatchDialog.showModal();
+    }
+}
+
+async function loadRatePlans(force = false) {
+    if (!requireToken()) {
+        return [];
+    }
+    if (!force && state.ratePlansLoaded) {
+        populateRatePlanList();
+        populateRateCalendarPlanOptions();
+        return state.ratePlans;
+    }
+    try {
+        const ratePlans = await apiFetch('rate-plans');
+        state.ratePlans = Array.isArray(ratePlans) ? ratePlans : [];
+        state.ratePlansLoaded = true;
+        populateRatePlanList();
+        populateRateCalendarPlanOptions();
+        return state.ratePlans;
+    } catch (error) {
+        showMessage(error.message, 'error');
+        return state.ratePlans;
+    }
+}
+
+async function loadCancellationPolicies(force = false) {
+    if (!requireToken()) {
+        return [];
+    }
+    if (!force && state.cancellationPoliciesLoaded) {
+        populateCancellationPolicyList();
+        populateCancellationPolicySelects();
+        return state.cancellationPolicies;
+    }
+    try {
+        const policies = await apiFetch('cancellation-policies');
+        state.cancellationPolicies = Array.isArray(policies) ? policies : [];
+        state.cancellationPoliciesLoaded = true;
+        populateCancellationPolicyList();
+        populateCancellationPolicySelects();
+        return state.cancellationPolicies;
+    } catch (error) {
+        showMessage(error.message, 'error');
+        return state.cancellationPolicies;
+    }
+}
+
+async function loadRateCalendarsForPlan(planId, force = false) {
+    if (!requireToken()) {
+        return [];
+    }
+    if (!planId) {
+        return [];
+    }
+    const key = String(planId);
+    if (!force && state.rateCalendarsLoaded.has(key)) {
+        populateRateCalendarSelect(planId);
+        return getRateCalendarList(planId);
+    }
+    try {
+        const response = await apiFetch(`rate-calendars?rate_plan_id=${planId}`);
+        const calendars = Array.isArray(response) ? response : [];
+        state.rateCalendarsByPlan[key] = calendars;
+        state.rateCalendarsLoaded.add(key);
+        populateRateCalendarSelect(planId);
+        return calendars;
+    } catch (error) {
+        showMessage(error.message, 'error');
+        return getRateCalendarList(planId);
+    }
+}
+
+async function loadRateCalendarRules(calendarId, force = false) {
+    if (!requireToken()) {
+        return [];
+    }
+    if (!calendarId) {
+        renderRateCalendarRulesTable(null);
+        return [];
+    }
+    if (!force && Array.isArray(state.rateCalendarRulesByCalendar[calendarId])) {
+        renderRateCalendarRulesTable(calendarId);
+        return state.rateCalendarRulesByCalendar[calendarId];
+    }
+    try {
+        const rules = await apiFetch(`rate-calendars/${calendarId}/rules`);
+        state.rateCalendarRulesByCalendar[calendarId] = Array.isArray(rules) ? rules : [];
+        renderRateCalendarRulesTable(calendarId);
+        return state.rateCalendarRulesByCalendar[calendarId];
+    } catch (error) {
+        showMessage(error.message, 'error');
+        return [];
+    }
+}
+
+async function ensureRateCalendarDailyData(planId, year, force = false) {
+    if (!requireToken()) {
+        return null;
+    }
+    if (!planId || !year) {
+        return null;
+    }
+    const planKey = String(planId);
+    if (!state.rateCalendarDailyCache[planKey]) {
+        state.rateCalendarDailyCache[planKey] = {};
+    }
+    if (!force && state.rateCalendarDailyCache[planKey][year]) {
+        return state.rateCalendarDailyCache[planKey][year];
+    }
+    try {
+        const payload = await apiFetch(`rate-plans/${planId}/calendar?year=${year}`);
+        const days = Array.isArray(payload?.days) ? payload.days : [];
+        const dayMap = {};
+        days.forEach((day) => {
+            if (day && day.date) {
+                dayMap[day.date] = day;
+            }
+        });
+        const normalized = {
+            ...payload,
+            days,
+            dayMap,
+        };
+        state.rateCalendarDailyCache[planKey][year] = normalized;
+        return normalized;
+    } catch (error) {
+        showMessage(error.message, 'error');
+        return state.rateCalendarDailyCache[planKey][year] || null;
+    }
+}
+
+function applyRateCalendarView() {
+    if (rateCalendarViewYearButton) {
+        rateCalendarViewYearButton.classList.toggle('active', state.rateCalendarView === 'year');
+    }
+    if (rateCalendarViewMonthButton) {
+        rateCalendarViewMonthButton.classList.toggle('active', state.rateCalendarView === 'month');
+    }
+    if (rateCalendarYearContainer) {
+        rateCalendarYearContainer.classList.toggle('hidden', state.rateCalendarView !== 'year');
+    }
+    if (rateCalendarMonthContainer) {
+        rateCalendarMonthContainer.classList.toggle('hidden', state.rateCalendarView !== 'month');
+    }
+}
+
+function updateRateCalendarYearSelect(year) {
+    if (!rateCalendarYearSelect) {
+        return;
+    }
+    const currentYear = Number(year) || new Date().getFullYear();
+    const options = [];
+    for (let offset = -1; offset <= 2; offset += 1) {
+        const value = currentYear + offset;
+        options.push(`<option value="${value}">${value}</option>`);
+    }
+    rateCalendarYearSelect.innerHTML = options.join('');
+    rateCalendarYearSelect.value = String(currentYear);
+}
+
+function renderRateCalendarSummary(planId, calendarId, calendarData) {
+    if (!rateCalendarSummary) {
+        return;
+    }
+    if (!planId) {
+        rateCalendarSummary.textContent = 'Bitte Rate-Plan auswählen, um Ratenkalender zu sehen.';
+        return;
+    }
+    const plan = getRatePlanById(planId);
+    const currency = plan?.currency || 'EUR';
+    if (!calendarId) {
+        const base = formatCurrency(plan?.base_price ?? 0, currency);
+        rateCalendarSummary.textContent = `Keine Kalender hinterlegt. Basispreis: ${base}.`;
+        return;
+    }
+    const calendar = getRateCalendarById(planId, calendarId);
+    if (!calendar) {
+        rateCalendarSummary.textContent = 'Ausgewählter Kalender nicht gefunden.';
+        return;
+    }
+    const rules = state.rateCalendarRulesByCalendar[calendarId] || [];
+    const weekendRules = rules.filter((rule) => {
+        const weekdays = normalizeWeekdayValues(rule.weekdays || []);
+        return weekdays.includes(6) || weekdays.includes(0);
+    });
+    const parts = [];
+    if (calendar.description) {
+        parts.push(calendar.description);
+    }
+    parts.push(`${rules.length} Regel${rules.length === 1 ? '' : 'n'}`);
+    if (weekendRules.length) {
+        parts.push(`${weekendRules.length} Wochenendregel${weekendRules.length === 1 ? '' : 'n'}`);
+    }
+    if (calendarData && Array.isArray(calendarData.days) && calendarData.days.length) {
+        const yearDays = calendarData.days.filter((day) => Number(day.calendar_id) === Number(calendarId));
+        const coverage = calendarData.days.length ? Math.round((yearDays.length / calendarData.days.length) * 100) : 0;
+        parts.push(`Abdeckung ${coverage}%`);
+    }
+    rateCalendarSummary.textContent = `${calendar.name} · ${parts.join(' · ')}`;
+}
+
+function renderRateCalendarRulesTable(calendarId) {
+    const plan = getRatePlanById(state.activeRatePlanId);
+    const currency = plan?.currency || 'EUR';
+    const rules = calendarId ? state.rateCalendarRulesByCalendar[calendarId] || [] : [];
+    renderTable('rate-calendar-rules', [
+        {
+            key: 'period',
+            label: 'Zeitraum',
+            render: (row) => {
+                const start = row.start_date ? formatDate(row.start_date) : '—';
+                const end = row.end_date ? formatDate(row.end_date) : '—';
+                return `${escapeHtml(start)}<span class="table-subline">bis ${escapeHtml(end)}</span>`;
+            },
+        },
+        {
+            key: 'price',
+            label: 'Preis',
+            render: (row) => formatCurrency(row.price ?? plan?.base_price ?? 0, row.currency || currency),
+        },
+        {
+            key: 'weekdays',
+            label: 'Wochentage',
+            render: (row) => formatWeekdayList(row.weekdays),
+        },
+        {
+            key: 'cancellation_policy_name',
+            label: 'Stornobedingung',
+            render: (row) => (row.cancellation_policy_name ? escapeHtml(row.cancellation_policy_name) : 'Rate-Plan-Standard'),
+        },
+        {
+            key: 'restrictions',
+            label: 'Einschränkungen',
+            render: (row) => {
+                const restrictions = [];
+                if (row.closed_for_arrival) {
+                    restrictions.push('Anreise gesperrt');
+                }
+                if (row.closed_for_departure) {
+                    restrictions.push('Abreise gesperrt');
+                }
+                if (!restrictions.length) {
+                    return '—';
+                }
+                return restrictions.map(escapeHtml).join('<br>');
+            },
+        },
+        {
+            key: 'actions',
+            label: 'Aktionen',
+            render: (row) => `
+                <div class="table-actions">
+                    <button type="button" class="secondary small" data-action="edit-rate-rule" data-id="${row.id}">Bearbeiten</button>
+                    <button type="button" class="danger small" data-action="delete-rate-rule" data-id="${row.id}">Löschen</button>
+                </div>
+            `,
+        },
+    ], rules);
+}
+
+function renderRateCalendarYear(planId, calendarId, year, calendarData) {
+    if (!rateCalendarYearContainer) {
+        return;
+    }
+    rateCalendarYearContainer.innerHTML = '';
+    if (!planId) {
+        rateCalendarYearContainer.innerHTML = '<p class="muted">Bitte Rate-Plan auswählen.</p>';
+        return;
+    }
+    if (!calendarData || !Array.isArray(calendarData.days) || !calendarData.days.length) {
+        rateCalendarYearContainer.innerHTML = '<p class="muted">Für das ausgewählte Jahr liegen keine Preisberechnungen vor.</p>';
+        return;
+    }
+    const plan = getRatePlanById(planId);
+    const currency = plan?.currency || 'EUR';
+    const basePrice = Number(plan?.base_price ?? 0) || 0;
+    for (let month = 0; month < 12; month += 1) {
+        const monthKey = `${year}-${String(month + 1).padStart(2, '0')}`;
+        const monthDays = calendarData.days.filter((day) => day.date && day.date.startsWith(monthKey));
+        const relevantDays = calendarId
+            ? monthDays.filter((day) => Number(day.calendar_id) === Number(calendarId))
+            : monthDays;
+        const consideredDays = relevantDays.length ? relevantDays : monthDays;
+        const priceValues = consideredDays
+            .map((day) => Number(day.price ?? basePrice))
+            .filter((value) => Number.isFinite(value));
+        const minPrice = priceValues.length ? Math.min(...priceValues) : basePrice;
+        const maxPrice = priceValues.length ? Math.max(...priceValues) : basePrice;
+        const weekendValues = consideredDays
+            .filter((day) => day.is_weekend)
+            .map((day) => Number(day.price ?? basePrice))
+            .filter((value) => Number.isFinite(value));
+        const weekendLabel = weekendValues.length
+            ? `${formatCurrency(Math.min(...weekendValues), currency)} – ${formatCurrency(Math.max(...weekendValues), currency)}`
+            : '—';
+        const totalDays = new Date(year, month + 1, 0).getDate();
+        const coverageDays = relevantDays.length;
+        const coveragePercent = totalDays > 0 ? Math.round((coverageDays / totalDays) * 100) : 0;
+        const monthName = new Date(year, month, 1).toLocaleDateString('de-DE', { month: 'long' });
+        const card = document.createElement('div');
+        card.className = 'month-card';
+        card.innerHTML = `
+            <h4>${escapeHtml(monthName)}</h4>
+            <div class="metric"><span>Minimum</span><span>${formatCurrency(minPrice, currency)}</span></div>
+            <div class="metric"><span>Maximum</span><span>${formatCurrency(maxPrice, currency)}</span></div>
+            <div class="metric"><span>Wochenenden</span><span>${weekendLabel}</span></div>
+            <div class="metric"><span>Abdeckung</span><span>${coveragePercent}%</span></div>
+        `;
+        rateCalendarYearContainer.appendChild(card);
+    }
+}
+
+function renderRateCalendarMonth(planId, calendarId, referenceDate, calendarData) {
+    if (!rateCalendarMonthContainer) {
+        return;
+    }
+    rateCalendarMonthContainer.innerHTML = '';
+    if (!planId) {
+        rateCalendarMonthContainer.innerHTML = '<p class="muted">Bitte Rate-Plan auswählen.</p>';
+        if (rateCalendarMonthLabel) {
+            rateCalendarMonthLabel.textContent = '';
+        }
+        return;
+    }
+    const plan = getRatePlanById(planId);
+    const currency = plan?.currency || 'EUR';
+    const basePrice = Number(plan?.base_price ?? 0) || 0;
+    const date = referenceDate instanceof Date ? new Date(referenceDate) : new Date();
+    const year = date.getFullYear();
+    const month = date.getMonth();
+    const monthName = date.toLocaleDateString('de-DE', { month: 'long', year: 'numeric' });
+    if (rateCalendarMonthLabel) {
+        rateCalendarMonthLabel.textContent = monthName;
+    }
+    const dayMap = calendarData?.dayMap || {};
+    const table = document.createElement('table');
+    table.className = 'calendar-month-table';
+    const thead = document.createElement('thead');
+    const headRow = document.createElement('tr');
+    const weekOrder = [1, 2, 3, 4, 5, 6, 0];
+    weekOrder.forEach((weekday) => {
+        const th = document.createElement('th');
+        th.textContent = WEEKDAY_LABELS[weekday];
+        headRow.appendChild(th);
+    });
+    thead.appendChild(headRow);
+    table.appendChild(thead);
+    const tbody = document.createElement('tbody');
+    const firstDay = new Date(year, month, 1);
+    const startOffset = (firstDay.getDay() + 6) % 7;
+    const daysInMonth = new Date(year, month + 1, 0).getDate();
+    const totalCells = Math.ceil((daysInMonth + startOffset) / 7) * 7;
+    for (let cellIndex = 0; cellIndex < totalCells; cellIndex += 1) {
+        if (cellIndex % 7 === 0) {
+            tbody.appendChild(document.createElement('tr'));
+        }
+        const row = tbody.lastElementChild;
+        const td = document.createElement('td');
+        const dayNumber = cellIndex - startOffset + 1;
+        if (dayNumber < 1 || dayNumber > daysInMonth) {
+            td.classList.add('inactive');
+            td.innerHTML = '&nbsp;';
+            row.appendChild(td);
+            continue;
+        }
+        const dateKeyValue = `${year}-${String(month + 1).padStart(2, '0')}-${String(dayNumber).padStart(2, '0')}`;
+        const dayData = dayMap[dateKeyValue] || null;
+        const ruleApplies = calendarId && dayData && Number(dayData.calendar_id) === Number(calendarId);
+        const priceValue = Number(dayData?.price ?? basePrice);
+        const priceText = formatCurrency(priceValue, dayData?.currency || currency);
+        const policyLines = [];
+        if (ruleApplies) {
+            if (dayData.cancellation_policy_name) {
+                policyLines.push(`<span class="policy">${escapeHtml(dayData.cancellation_policy_name)}</span>`);
+            }
+            if (dayData.closed_for_arrival) {
+                policyLines.push('<span class="policy">Anreise gesperrt</span>');
+            }
+            if (dayData.closed_for_departure) {
+                policyLines.push('<span class="policy">Abreise gesperrt</span>');
+            }
+        } else if (calendarId) {
+            policyLines.push('<span class="policy muted">Kalender nicht aktiv</span>');
+        } else {
+            policyLines.push('<span class="policy muted">Basispreis</span>');
+        }
+        const isWeekendDay = dayData?.is_weekend || isWeekend(new Date(year, month, dayNumber));
+        if (isWeekendDay) {
+            td.classList.add('weekend');
+        }
+        td.innerHTML = `
+            <strong>${dayNumber}</strong>
+            <span class="price">${priceText}</span>
+            ${policyLines.join('')}
+        `;
+        row.appendChild(td);
+    }
+    table.appendChild(tbody);
+    rateCalendarMonthContainer.appendChild(table);
+}
+
+async function updateRateCalendarView(force = false) {
+    if (!rateCalendarYearContainer || !rateCalendarMonthContainer) {
+        return;
+    }
+    const planId = state.activeRatePlanId;
+    const cursor = state.rateCalendarMonthCursor instanceof Date
+        ? new Date(state.rateCalendarMonthCursor)
+        : new Date();
+    const year = cursor.getFullYear();
+    updateRateCalendarYearSelect(year);
+    if (!planId) {
+        renderRateCalendarYear(null, null, year, null);
+        renderRateCalendarMonth(null, null, cursor, null);
+        renderRateCalendarRulesTable(null);
+        if (rateCalendarSummary) {
+            rateCalendarSummary.textContent = 'Bitte Rate-Plan auswählen.';
+        }
+        return;
+    }
+    const calendarData = await ensureRateCalendarDailyData(planId, year, force);
+    renderRateCalendarYear(planId, state.activeRateCalendarId, year, calendarData);
+    renderRateCalendarMonth(planId, state.activeRateCalendarId, cursor, calendarData);
+    await loadRateCalendarRules(state.activeRateCalendarId, force);
+    renderRateCalendarSummary(planId, state.activeRateCalendarId, calendarData);
+    applyRateCalendarView();
+}
+
+async function loadRates(force = false) {
+    if (!requireToken()) {
+        return state.ratePlans;
+    }
+
+    if (!force && state.loadedSections.has('rates')) {
+        populateRatePlanList();
+        populateRateCalendarPlanOptions();
+        if (state.activeRatePlanId) {
+            populateRateCalendarSelect(state.activeRatePlanId);
+        }
+        await updateRateCalendarView(false);
+        return state.ratePlans;
+    }
+
+    if (force) {
+        state.rateCalendarsByPlan = {};
+        state.rateCalendarRulesByCalendar = {};
+        state.rateCalendarsLoaded.clear();
+        state.rateCalendarDailyCache = {};
+    }
+
+    const [ratePlans] = await Promise.all([
+        loadRatePlans(force),
+        loadCancellationPolicies(force),
+    ]);
+
+    if (!ratePlans.length) {
+        state.activeRatePlanId = null;
+        state.activeRateCalendarId = null;
+        renderRateCalendarYear(null, null, new Date().getFullYear(), null);
+        renderRateCalendarMonth(null, null, new Date(), null);
+        renderRateCalendarRulesTable(null);
+        if (rateCalendarSummary) {
+            rateCalendarSummary.textContent = 'Noch keine Rate-Pläne angelegt.';
+        }
+        state.loadedSections.add('rates');
+        return state.ratePlans;
+    }
+
+    if (!state.activeRatePlanId || !ratePlans.some((plan) => Number(plan.id) === Number(state.activeRatePlanId))) {
+        state.activeRatePlanId = Number(ratePlans[0].id);
+    }
+
+    populateRateCalendarPlanOptions();
+    await loadRateCalendarsForPlan(state.activeRatePlanId, force);
+    const calendars = getRateCalendarList(state.activeRatePlanId);
+    if (!state.activeRateCalendarId || !calendars.some((calendar) => Number(calendar.id) === Number(state.activeRateCalendarId))) {
+        state.activeRateCalendarId = calendars.length ? Number(calendars[0].id) : null;
+        populateRateCalendarSelect(state.activeRatePlanId);
+    }
+
+    await updateRateCalendarView(force);
+    state.loadedSections.add('rates');
+    return state.ratePlans;
 }
 
 async function loadDashboard(force = false) {
@@ -2521,7 +3607,7 @@ async function loadDashboard(force = false) {
             { key: 'occupancy_rate', label: 'Auslastung', render: (row) => `${row.occupancy_rate}%` },
         ], Array.isArray(occupancy) ? occupancy : []);
 
-        renderOccupancyCalendar(rooms, reservations, targetDateValue, CALENDAR_DAYS, state.calendarLabelMode, state.calendarCategorySort);
+        renderOccupancyCalendar(rooms, reservations, targetDateValue, CALENDAR_DAYS, state.calendarLabelMode);
         state.loadedSections.add('dashboard');
     } catch (error) {
         showMessage(error.message, 'error');
@@ -2586,71 +3672,6 @@ async function loadSettings(force = false) {
         state.loadedSections.add('settings');
     } catch (error) {
         showMessage(error.message, 'error');
-    }
-}
-
-async function runSystemUpdate() {
-    if (!requireToken() || !runSystemUpdateButton) {
-        return;
-    }
-
-    const originalText = runSystemUpdateButton.textContent;
-    runSystemUpdateButton.disabled = true;
-    runSystemUpdateButton.textContent = 'Update läuft…';
-    setSystemUpdateMessage('Update wird ausgeführt…', 'info');
-    renderSystemUpdateLog([]);
-
-    try {
-        const response = await fetch(`../backend/update.php?token=${encodeURIComponent(state.token)}&format=json`, {
-            headers: {
-                Accept: 'application/json',
-            },
-        });
-
-        let data = null;
-        try {
-            data = await response.json();
-        } catch (parseError) {
-            data = null;
-        }
-
-        const logEntries = data && Array.isArray(data.log) ? data.log : [];
-        if (logEntries.length > 0) {
-            renderSystemUpdateLog(logEntries);
-        }
-
-        if (!response.ok || !data || typeof data !== 'object') {
-            const message = data && typeof data.message === 'string'
-                ? data.message
-                : `Update fehlgeschlagen (Status ${response.status})`;
-            throw new Error(message);
-        }
-
-        if (!data.success) {
-            const message = typeof data.message === 'string' && data.message !== ''
-                ? data.message
-                : 'Update fehlgeschlagen.';
-            if (logEntries.length === 0) {
-                renderSystemUpdateLog([]);
-            }
-            throw new Error(message);
-        }
-
-        setSystemUpdateMessage(data.message || 'Update erfolgreich abgeschlossen.', 'success');
-        if (logEntries.length === 0) {
-            renderSystemUpdateLog([]);
-        }
-        showMessage('System wurde aktualisiert.', 'success');
-    } catch (error) {
-        const message = error instanceof Error && error.message ? error.message : 'Update fehlgeschlagen.';
-        setSystemUpdateMessage(message, 'error');
-        if (systemUpdateLog && systemUpdateLog.innerHTML !== '') {
-            systemUpdateLog.classList.remove('hidden');
-        }
-        showMessage(message, 'error');
-    } finally {
-        runSystemUpdateButton.disabled = false;
-        runSystemUpdateButton.textContent = originalText || 'Update starten';
     }
 }
 
@@ -2959,6 +3980,7 @@ const sectionLoaders = {
     dashboard: () => loadDashboard(true),
     reservations: () => loadReservations(true),
     rooms: () => loadRooms(true),
+    rates: () => loadRates(!state.loadedSections.has('rates')),
     housekeeping: () => loadHousekeeping(true),
     billing: () => loadBilling(true),
     reports: () => loadReports(true),
@@ -3009,10 +4031,6 @@ if (reservationForm) {
             status: reservationForm.status.value,
             booked_via: reservationForm.booked_via.value || null,
         };
-
-        if (reservationRatePlanSelect) {
-            payload.rate_plan_id = reservationRatePlanSelect.value ? Number(reservationRatePlanSelect.value) : null;
-        }
 
         if (requests.length) {
             payload.room_requests = requests.map((request) => ({
@@ -3088,61 +4106,6 @@ if (reservationForm) {
 if (reservationCancelButton) {
     reservationCancelButton.addEventListener('click', () => {
         resetReservationForm();
-    });
-}
-
-if (reservationRatePlanSelect) {
-    reservationRatePlanSelect.addEventListener('change', () => {
-        reservationPricingOverride = null;
-        if (reservationNightlyRateInput) {
-            reservationNightlyRateInput.value = '';
-        }
-        if (reservationTotalAmountInput) {
-            reservationTotalAmountInput.value = '';
-        }
-        updateReservationPricing();
-    });
-}
-
-if (reservationForm?.check_in) {
-    reservationForm.check_in.addEventListener('change', updateReservationPricing);
-    reservationForm.check_in.addEventListener('input', updateReservationPricing);
-}
-
-if (reservationForm?.check_out) {
-    reservationForm.check_out.addEventListener('change', updateReservationPricing);
-    reservationForm.check_out.addEventListener('input', updateReservationPricing);
-}
-
-if (reservationNightlyRateInput) {
-    reservationNightlyRateInput.addEventListener('input', () => {
-        if (isSyncingPricingFields) {
-            return;
-        }
-        const hasValue = reservationNightlyRateInput.value.trim() !== '';
-        reservationPricingOverride = hasValue ? 'nightly' : null;
-        updateReservationPricing();
-    });
-    reservationNightlyRateInput.addEventListener('change', () => {
-        if (!isSyncingPricingFields) {
-            updateReservationPricing();
-        }
-    });
-}
-
-if (reservationTotalAmountInput) {
-    reservationTotalAmountInput.addEventListener('input', () => {
-        if (isSyncingPricingFields) {
-            return;
-        }
-        const hasValue = reservationTotalAmountInput.value.trim() !== '';
-        reservationPricingOverride = hasValue ? 'total' : null;
-        updateReservationPricing();
-    });
-    reservationTotalAmountInput.addEventListener('change', () => {
-        if (!isSyncingPricingFields) {
-            updateReservationPricing();
-        }
     });
 }
 
@@ -3299,9 +4262,6 @@ document.getElementById('reload-integrations').addEventListener('click', () => l
 if (settingsReloadButton) {
     settingsReloadButton.addEventListener('click', () => loadSettings(true));
 }
-if (runSystemUpdateButton) {
-    runSystemUpdateButton.addEventListener('click', () => runSystemUpdate());
-}
 document.getElementById('refresh-dashboard').addEventListener('click', () => loadDashboard(true));
 dashboardDateInput.addEventListener('change', () => loadDashboard(true));
 document.getElementById('refresh-reports').addEventListener('click', () => loadReports(true));
@@ -3339,26 +4299,9 @@ document.getElementById('room-type-form').addEventListener('submit', async (even
         return;
     }
     const form = event.target;
-    const baseOccupancyValue = Number(form.base_occupancy.value);
-    const maxOccupancyValue = Number(form.max_occupancy.value);
-    if (!Number.isFinite(baseOccupancyValue) || baseOccupancyValue <= 0) {
-        showMessage('Basisbelegung muss größer als 0 sein.', 'error');
-        return;
-    }
-    if (!Number.isFinite(maxOccupancyValue) || maxOccupancyValue <= 0) {
-        showMessage('Maximalbelegung muss größer als 0 sein.', 'error');
-        return;
-    }
-    const baseOccupancy = Math.max(1, Math.round(baseOccupancyValue));
-    const maxOccupancy = Math.max(1, Math.round(maxOccupancyValue));
-    if (baseOccupancy > maxOccupancy) {
-        showMessage('Basisbelegung darf die Maximalbelegung nicht überschreiten.', 'error');
-        return;
-    }
     const payload = {
         name: form.name.value,
-        base_occupancy: baseOccupancy,
-        max_occupancy: maxOccupancy,
+        base_rate: form.base_price.value ? Number(form.base_price.value) : null,
         description: form.description.value || null,
     };
     try {
@@ -3367,8 +4310,6 @@ document.getElementById('room-type-form').addEventListener('submit', async (even
             body: JSON.stringify(payload),
         });
         form.reset();
-        form.base_occupancy.value = '1';
-        form.max_occupancy.value = '1';
         showMessage('Zimmerkategorie erstellt.', 'success');
         const roomTypes = await apiFetch('room-types');
         state.roomTypes = roomTypes;
@@ -3379,33 +4320,539 @@ document.getElementById('room-type-form').addEventListener('submit', async (even
     }
 });
 
-document.getElementById('rate-plan-form').addEventListener('submit', async (event) => {
-    event.preventDefault();
-    if (!requireToken()) {
-        return;
-    }
-    const form = event.target;
-    const payload = {
-        name: form.name.value,
-        base_price: form.base_price.value ? Number(form.base_price.value) : null,
-        currency: form.currency.value || 'EUR',
-        cancellation_policy: form.cancellation_policy.value || null,
-    };
-    try {
-        await apiFetch('rate-plans', {
-            method: 'POST',
-            body: JSON.stringify(payload),
+if (ratePlanForm) {
+    ratePlanForm.addEventListener('submit', async (event) => {
+        event.preventDefault();
+        if (!requireToken()) {
+            return;
+        }
+        const payload = {
+            name: ratePlanForm.name.value,
+            base_price: ratePlanForm.base_price.value ? Number(ratePlanForm.base_price.value) : null,
+            currency: ratePlanForm.currency.value || 'EUR',
+            cancellation_policy: ratePlanForm.cancellation_policy.value || null,
+        };
+        if (ratePlanForm.cancellation_policy_id) {
+            payload.cancellation_policy_id = ratePlanForm.cancellation_policy_id.value
+                ? Number(ratePlanForm.cancellation_policy_id.value)
+                : null;
+        }
+        const isEdit = Boolean(state.editingRatePlanId);
+        const endpoint = isEdit ? `rate-plans/${state.editingRatePlanId}` : 'rate-plans';
+        const method = isEdit ? 'PATCH' : 'POST';
+        try {
+            await apiFetch(endpoint, {
+                method,
+                body: JSON.stringify(payload),
+            });
+            showMessage(isEdit ? 'Rate-Plan aktualisiert.' : 'Rate-Plan angelegt.', 'success');
+            resetRatePlanForm();
+            await loadRates(true);
+            await ensureReservationReferenceData(true);
+        } catch (error) {
+            showMessage(error.message, 'error');
+        }
+    });
+}
+
+if (ratePlanCancelButton) {
+    ratePlanCancelButton.addEventListener('click', () => {
+        resetRatePlanForm();
+    });
+}
+
+if (ratePlansList) {
+    ratePlansList.addEventListener('click', async (event) => {
+        const target = event.target;
+        if (!(target instanceof HTMLElement)) {
+            return;
+        }
+        const action = target.dataset.action;
+        const id = Number(target.dataset.id);
+        if (!action || !Number.isFinite(id)) {
+            return;
+        }
+        if (action === 'edit-rate-plan') {
+            const plan = state.ratePlans.find((entry) => Number(entry.id) === id);
+            if (plan) {
+                fillRatePlanForm(plan);
+            }
+            return;
+        }
+        if (action === 'delete-rate-plan') {
+            if (!requireToken()) {
+                return;
+            }
+            if (!window.confirm('Rate-Plan wirklich löschen?')) {
+                return;
+            }
+            try {
+                await apiFetch(`rate-plans/${id}`, { method: 'DELETE' });
+                showMessage('Rate-Plan gelöscht.', 'success');
+                if (state.activeRatePlanId === id) {
+                    state.activeRatePlanId = null;
+                }
+                await loadRates(true);
+                await ensureReservationReferenceData(true);
+            } catch (error) {
+                showMessage(error.message, 'error');
+            }
+        }
+    });
+}
+
+if (reloadRatePlansButton) {
+    reloadRatePlansButton.addEventListener('click', () => {
+        loadRates(true);
+    });
+}
+
+if (cancellationPolicyForm) {
+    cancellationPolicyForm.addEventListener('submit', async (event) => {
+        event.preventDefault();
+        if (!requireToken()) {
+            return;
+        }
+        const payload = {
+            name: cancellationPolicyForm.name.value,
+            free_until_days: cancellationPolicyForm.free_until_days.value
+                ? Number(cancellationPolicyForm.free_until_days.value)
+                : null,
+            penalty_type: cancellationPolicyForm.penalty_type.value || 'percent',
+            penalty_value: cancellationPolicyForm.penalty_value.value
+                ? Number(cancellationPolicyForm.penalty_value.value)
+                : 0,
+            description: cancellationPolicyForm.description.value || null,
+        };
+        const isEdit = Boolean(state.editingCancellationPolicyId);
+        const endpoint = isEdit
+            ? `cancellation-policies/${state.editingCancellationPolicyId}`
+            : 'cancellation-policies';
+        const method = isEdit ? 'PATCH' : 'POST';
+        try {
+            await apiFetch(endpoint, {
+                method,
+                body: JSON.stringify(payload),
+            });
+            showMessage(isEdit ? 'Stornobedingung aktualisiert.' : 'Stornobedingung gespeichert.', 'success');
+            resetCancellationPolicyForm();
+            await loadRates(true);
+        } catch (error) {
+            showMessage(error.message, 'error');
+        }
+    });
+}
+
+if (cancellationPolicyCancelButton) {
+    cancellationPolicyCancelButton.addEventListener('click', () => {
+        resetCancellationPolicyForm();
+    });
+}
+
+if (cancellationPoliciesList) {
+    cancellationPoliciesList.addEventListener('click', async (event) => {
+        const target = event.target;
+        if (!(target instanceof HTMLElement)) {
+            return;
+        }
+        const action = target.dataset.action;
+        const id = Number(target.dataset.id);
+        if (!action || !Number.isFinite(id)) {
+            return;
+        }
+        if (action === 'edit-cancellation-policy') {
+            const policy = state.cancellationPolicies.find((entry) => Number(entry.id) === id);
+            if (policy) {
+                fillCancellationPolicyForm(policy);
+            }
+            return;
+        }
+        if (action === 'delete-cancellation-policy') {
+            if (!requireToken()) {
+                return;
+            }
+            if (!window.confirm('Stornobedingung wirklich löschen?')) {
+                return;
+            }
+            try {
+                await apiFetch(`cancellation-policies/${id}`, { method: 'DELETE' });
+                showMessage('Stornobedingung gelöscht.', 'success');
+                await loadRates(true);
+            } catch (error) {
+                showMessage(error.message, 'error');
+            }
+        }
+    });
+}
+
+if (reloadCancellationPoliciesButton) {
+    reloadCancellationPoliciesButton.addEventListener('click', () => {
+        loadRates(true);
+    });
+}
+
+if (rateCalendarPlanSelect) {
+    rateCalendarPlanSelect.addEventListener('change', async () => {
+        const value = rateCalendarPlanSelect.value;
+        state.activeRatePlanId = value ? Number(value) : null;
+        if (!state.activeRatePlanId) {
+            populateRateCalendarSelect(null);
+            await updateRateCalendarView(true);
+            return;
+        }
+        await loadRateCalendarsForPlan(state.activeRatePlanId, true);
+        const calendars = getRateCalendarList(state.activeRatePlanId);
+        state.activeRateCalendarId = calendars.length ? Number(calendars[0].id) : null;
+        populateRateCalendarSelect(state.activeRatePlanId);
+        await updateRateCalendarView(true);
+    });
+}
+
+if (rateCalendarSelect) {
+    rateCalendarSelect.addEventListener('change', async () => {
+        const value = rateCalendarSelect.value;
+        state.activeRateCalendarId = value ? Number(value) : null;
+        await updateRateCalendarView(true);
+    });
+}
+
+if (rateCalendarManageButton) {
+    rateCalendarManageButton.addEventListener('click', () => {
+        if (!state.activeRatePlanId) {
+            showMessage('Bitte zuerst einen Rate-Plan auswählen.', 'error');
+            return;
+        }
+        const calendar = getRateCalendarById(state.activeRatePlanId, state.activeRateCalendarId);
+        openRateCalendarDialog(calendar || null);
+    });
+}
+
+if (rateCalendarAddRuleButton) {
+    rateCalendarAddRuleButton.addEventListener('click', () => {
+        if (!state.activeRateCalendarId) {
+            showMessage('Bitte zuerst einen Kalender auswählen.', 'error');
+            return;
+        }
+        openRateRuleDialog();
+    });
+}
+
+if (rateCalendarBatchButton) {
+    rateCalendarBatchButton.addEventListener('click', () => {
+        if (!state.activeRateCalendarId) {
+            showMessage('Bitte zuerst einen Kalender auswählen.', 'error');
+            return;
+        }
+        openRateBatchDialog();
+    });
+}
+
+if (rateCalendarViewYearButton) {
+    rateCalendarViewYearButton.addEventListener('click', () => {
+        state.rateCalendarView = 'year';
+        applyRateCalendarView();
+    });
+}
+
+if (rateCalendarViewMonthButton) {
+    rateCalendarViewMonthButton.addEventListener('click', () => {
+        state.rateCalendarView = 'month';
+        applyRateCalendarView();
+    });
+}
+
+if (rateCalendarPrevMonthButton) {
+    rateCalendarPrevMonthButton.addEventListener('click', async () => {
+        const cursor = state.rateCalendarMonthCursor instanceof Date
+            ? new Date(state.rateCalendarMonthCursor)
+            : new Date();
+        cursor.setMonth(cursor.getMonth() - 1);
+        state.rateCalendarMonthCursor = cursor;
+        await updateRateCalendarView();
+    });
+}
+
+if (rateCalendarNextMonthButton) {
+    rateCalendarNextMonthButton.addEventListener('click', async () => {
+        const cursor = state.rateCalendarMonthCursor instanceof Date
+            ? new Date(state.rateCalendarMonthCursor)
+            : new Date();
+        cursor.setMonth(cursor.getMonth() + 1);
+        state.rateCalendarMonthCursor = cursor;
+        await updateRateCalendarView();
+    });
+}
+
+if (rateCalendarYearSelect) {
+    rateCalendarYearSelect.addEventListener('change', async () => {
+        const year = Number(rateCalendarYearSelect.value);
+        if (!Number.isFinite(year)) {
+            return;
+        }
+        const cursor = state.rateCalendarMonthCursor instanceof Date
+            ? new Date(state.rateCalendarMonthCursor)
+            : new Date();
+        cursor.setFullYear(year);
+        state.rateCalendarMonthCursor = cursor;
+        await updateRateCalendarView(true);
+    });
+}
+
+if (rateCalendarModalForm) {
+    rateCalendarModalForm.addEventListener('submit', async (event) => {
+        event.preventDefault();
+        if (!requireToken()) {
+            return;
+        }
+        const ratePlanId = rateCalendarModalForm.rate_plan_id ? Number(rateCalendarModalForm.rate_plan_id.value) : null;
+        if (!ratePlanId) {
+            showMessage('Bitte einen Rate-Plan auswählen.', 'error');
+            return;
+        }
+        const payload = {
+            rate_plan_id: ratePlanId,
+            name: rateCalendarModalForm.name.value,
+            description: rateCalendarModalForm.description.value || null,
+        };
+        const isEdit = Boolean(state.editingRateCalendarId);
+        const endpoint = isEdit
+            ? `rate-calendars/${state.editingRateCalendarId}`
+            : 'rate-calendars';
+        const method = isEdit ? 'PATCH' : 'POST';
+        try {
+            await apiFetch(endpoint, {
+                method,
+                body: JSON.stringify(payload),
+            });
+            showMessage(isEdit ? 'Kalender aktualisiert.' : 'Kalender angelegt.', 'success');
+            resetRateCalendarDialog(true);
+            await loadRateCalendarsForPlan(ratePlanId, true);
+            if (!state.activeRatePlanId) {
+                state.activeRatePlanId = ratePlanId;
+            }
+            const calendars = getRateCalendarList(ratePlanId);
+            if (calendars.length) {
+                state.activeRateCalendarId = Number(calendars[0].id);
+            }
+            populateRateCalendarSelect(ratePlanId);
+            await updateRateCalendarView(true);
+        } catch (error) {
+            showMessage(error.message, 'error');
+        }
+    });
+    rateCalendarModalForm.querySelectorAll('button[data-action="cancel"]').forEach((button) => {
+        button.addEventListener('click', () => resetRateCalendarDialog(true));
+    });
+}
+
+if (rateCalendarDeleteButton) {
+    rateCalendarDeleteButton.addEventListener('click', async () => {
+        if (!state.editingRateCalendarId) {
+            resetRateCalendarDialog(true);
+            return;
+        }
+        if (!requireToken()) {
+            return;
+        }
+        if (!window.confirm('Kalender wirklich löschen?')) {
+            return;
+        }
+        try {
+            await apiFetch(`rate-calendars/${state.editingRateCalendarId}`, { method: 'DELETE' });
+            showMessage('Kalender gelöscht.', 'success');
+            const planId = rateCalendarModalForm.rate_plan_id ? Number(rateCalendarModalForm.rate_plan_id.value) : null;
+            resetRateCalendarDialog(true);
+            if (planId) {
+                await loadRateCalendarsForPlan(planId, true);
+                const calendars = getRateCalendarList(planId);
+                state.activeRateCalendarId = calendars.length ? Number(calendars[0].id) : null;
+                if (state.activeRatePlanId === planId && !state.activeRateCalendarId) {
+                    populateRateCalendarSelect(planId);
+                }
+                await updateRateCalendarView(true);
+            }
+        } catch (error) {
+            showMessage(error.message, 'error');
+        }
+    });
+}
+
+if (rateRuleForm) {
+    rateRuleForm.addEventListener('submit', async (event) => {
+        event.preventDefault();
+        if (!requireToken()) {
+            return;
+        }
+        if (!state.activeRateCalendarId) {
+            showMessage('Bitte zuerst einen Kalender auswählen.', 'error');
+            return;
+        }
+        if (!rateRuleForm.price.value) {
+            showMessage('Bitte einen Preis angeben.', 'error');
+            return;
+        }
+        const payload = {
+            start_date: rateRuleForm.start_date.value,
+            end_date: rateRuleForm.end_date.value,
+            price: rateRuleForm.price.value ? Number(rateRuleForm.price.value) : null,
+            cancellation_policy_id: rateRuleForm.cancellation_policy_id && rateRuleForm.cancellation_policy_id.value
+                ? Number(rateRuleForm.cancellation_policy_id.value)
+                : null,
+            closed_for_arrival: rateRuleForm.closed_for_arrival ? rateRuleForm.closed_for_arrival.checked : false,
+            closed_for_departure: rateRuleForm.closed_for_departure ? rateRuleForm.closed_for_departure.checked : false,
+        };
+        const weekdayValues = Array.from(rateRuleForm.querySelectorAll('input[name="weekdays"]:checked')).map((input) => Number(input.value));
+        const normalizedWeekdays = normalizeWeekdayValues(weekdayValues);
+        if (normalizedWeekdays.length) {
+            payload.weekdays = normalizedWeekdays;
+        }
+        const isEdit = Boolean(state.editingRateRuleId);
+        const endpoint = isEdit
+            ? `rate-calendar-rules/${state.editingRateRuleId}`
+            : `rate-calendars/${state.activeRateCalendarId}/rules`;
+        const method = isEdit ? 'PATCH' : 'POST';
+        try {
+            await apiFetch(endpoint, {
+                method,
+                body: JSON.stringify(payload),
+            });
+            showMessage(isEdit ? 'Preisregel aktualisiert.' : 'Preisregel gespeichert.', 'success');
+            resetRateRuleDialog(true);
+            await loadRateCalendarRules(state.activeRateCalendarId, true);
+            await updateRateCalendarView(true);
+        } catch (error) {
+            showMessage(error.message, 'error');
+        }
+    });
+    rateRuleForm.querySelectorAll('button[data-action="cancel"]').forEach((button) => {
+        button.addEventListener('click', () => resetRateRuleDialog(true));
+    });
+}
+
+if (rateRuleDeleteButton) {
+    rateRuleDeleteButton.addEventListener('click', async () => {
+        if (!state.editingRateRuleId) {
+            resetRateRuleDialog(true);
+            return;
+        }
+        if (!requireToken()) {
+            return;
+        }
+        if (!window.confirm('Preisregel wirklich löschen?')) {
+            return;
+        }
+        try {
+            await apiFetch(`rate-calendar-rules/${state.editingRateRuleId}`, { method: 'DELETE' });
+            showMessage('Preisregel gelöscht.', 'success');
+            const calendarId = state.activeRateCalendarId;
+            resetRateRuleDialog(true);
+            if (calendarId) {
+                await loadRateCalendarRules(calendarId, true);
+                await updateRateCalendarView(true);
+            }
+        } catch (error) {
+            showMessage(error.message, 'error');
+        }
+    });
+}
+
+if (rateCalendarRulesContainer) {
+    rateCalendarRulesContainer.addEventListener('click', (event) => {
+        const target = event.target;
+        if (!(target instanceof HTMLElement)) {
+            return;
+        }
+        const action = target.dataset.action;
+        const id = Number(target.dataset.id);
+        if (!action || !Number.isFinite(id)) {
+            return;
+        }
+        if (action === 'edit-rate-rule') {
+            const rules = state.rateCalendarRulesByCalendar[state.activeRateCalendarId] || [];
+            const rule = rules.find((entry) => Number(entry.id) === id);
+            if (rule) {
+                openRateRuleDialog(rule);
+            }
+            return;
+        } else if (action === 'delete-rate-rule') {
+            if (!requireToken()) {
+                return;
+            }
+            if (!window.confirm('Preisregel wirklich löschen?')) {
+                return;
+            }
+            apiFetch(`rate-calendar-rules/${id}`, { method: 'DELETE' })
+                .then(async () => {
+                    showMessage('Preisregel gelöscht.', 'success');
+                    await loadRateCalendarRules(state.activeRateCalendarId, true);
+                    await updateRateCalendarView(true);
+                })
+                .catch((error) => {
+                    showMessage(error.message, 'error');
+                });
+            return;
+        }
+    });
+}
+
+if (rateBatchForm) {
+    rateBatchForm.addEventListener('submit', async (event) => {
+        event.preventDefault();
+        if (!requireToken()) {
+            return;
+        }
+        if (!state.activeRateCalendarId) {
+            showMessage('Bitte zuerst einen Kalender auswählen.', 'error');
+            return;
+        }
+        if (!rateBatchForm.price.value) {
+            showMessage('Bitte einen Preis angeben.', 'error');
+            return;
+        }
+        const weekdayValues = Array.from(rateBatchForm.querySelectorAll('input[name="weekdays"]:checked')).map((input) => Number(input.value));
+        const normalizedWeekdays = normalizeWeekdayValues(weekdayValues);
+        const payload = {
+            start_date: rateBatchForm.start_date.value,
+            end_date: rateBatchForm.end_date.value,
+            price: rateBatchForm.price.value ? Number(rateBatchForm.price.value) : null,
+            cancellation_policy_id: rateBatchForm.cancellation_policy_id && rateBatchForm.cancellation_policy_id.value
+                ? Number(rateBatchForm.cancellation_policy_id.value)
+                : null,
+            split_by_month: rateBatchForm.split_by_month ? rateBatchForm.split_by_month.checked : false,
+            closed_for_arrival: rateBatchForm.closed_for_arrival ? rateBatchForm.closed_for_arrival.checked : false,
+            closed_for_departure: rateBatchForm.closed_for_departure ? rateBatchForm.closed_for_departure.checked : false,
+            weekend_only: rateBatchForm.weekend_only ? rateBatchForm.weekend_only.checked : false,
+        };
+        if (normalizedWeekdays.length) {
+            payload.weekdays = normalizedWeekdays;
+        }
+        try {
+            await apiFetch(`rate-calendars/${state.activeRateCalendarId}/rules/batch`, {
+                method: 'POST',
+                body: JSON.stringify(payload),
+            });
+            showMessage('Batch-Update angewendet.', 'success');
+            resetRateBatchForm(true);
+            await loadRateCalendarRules(state.activeRateCalendarId, true);
+            await updateRateCalendarView(true);
+        } catch (error) {
+            showMessage(error.message, 'error');
+        }
+    });
+    rateBatchForm.querySelectorAll('button[data-action="cancel"]').forEach((button) => {
+        button.addEventListener('click', () => resetRateBatchForm(true));
+    });
+    if (rateBatchForm.weekend_only) {
+        rateBatchForm.weekend_only.addEventListener('change', () => {
+            if (!rateBatchForm.weekend_only.checked) {
+                return;
+            }
+            rateBatchForm.querySelectorAll('input[name="weekdays"]').forEach((input) => {
+                input.checked = input.value === '6' || input.value === '0';
+            });
         });
-        form.reset();
-        showMessage('Rate-Plan angelegt.', 'success');
-        const ratePlans = await apiFetch('rate-plans');
-        state.ratePlans = ratePlans;
-        populateRatePlanList();
-        await ensureReservationReferenceData(true);
-    } catch (error) {
-        showMessage(error.message, 'error');
     }
-});
+}
 
 if (articleForm) {
     articleForm.addEventListener('submit', async (event) => {
