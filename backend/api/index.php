@@ -684,12 +684,20 @@ function handleReservations(string $method, array $segments): void
         validateReservationPayload($data);
 
         $guestCount = calculateGuestCount($data['adults'] ?? 1, $data['children'] ?? 0);
-        $roomRequests = normalizeReservationRoomRequests($pdo, $data['room_requests'] ?? []);
+        try {
+            $roomRequests = normalizeReservationRoomRequests($pdo, $data['room_requests'] ?? []);
+        } catch (InvalidArgumentException $exception) {
+            jsonResponse(['error' => $exception->getMessage()], 422);
+        }
         if (empty($roomRequests) && (empty($data['rooms']) || !is_array($data['rooms']) || count($data['rooms']) === 0)) {
             jsonResponse(['error' => 'Bitte mindestens eine Zimmerkategorie oder ein Zimmer zuweisen.'], 422);
         }
         if (!empty($roomRequests)) {
-            ensureRoomRequestCapacity($roomRequests, $guestCount);
+            try {
+                ensureRoomRequestCapacity($roomRequests, $guestCount);
+            } catch (InvalidArgumentException $exception) {
+                jsonResponse(['error' => $exception->getMessage()], 422);
+            }
         }
 
         $pdo->beginTransaction();
@@ -700,14 +708,14 @@ function handleReservations(string $method, array $segments): void
             } else {
                 $guestId = (int) $guestId;
                 if ($guestId <= 0) {
-                    jsonResponse(['error' => 'guest_id must reference an existing guest.'], 422);
+                    throw new InvalidArgumentException('guest_id must reference an existing guest.');
                 }
             }
 
             $confirmation = $data['confirmation_number'] ?? generateConfirmationNumber();
             $statusValue = isset($data['status']) ? normalizeReservationStatus((string) $data['status']) : 'tentative';
             if ($statusValue === null) {
-                jsonResponse(['error' => 'Unsupported reservation status.'], 422);
+                throw new InvalidArgumentException('Unsupported reservation status.');
             }
             $stmt = $pdo->prepare('INSERT INTO reservations (confirmation_number, guest_id, status, check_in_date, check_out_date, adults, children, rate_plan_id, total_amount, currency, booked_via, notes, created_at, updated_at) VALUES (:confirmation_number, :guest_id, :status, :check_in_date, :check_out_date, :adults, :children, :rate_plan_id, :total_amount, :currency, :booked_via, :notes, :created_at, :updated_at)');
             $stmt->execute([
@@ -760,7 +768,9 @@ function handleReservations(string $method, array $segments): void
             $pdo->commit();
             jsonResponse(['id' => $reservationId, 'confirmation_number' => $confirmation], 201);
         } catch (Throwable $exception) {
-            $pdo->rollBack();
+            if ($pdo->inTransaction()) {
+                $pdo->rollBack();
+            }
             $status = ($exception instanceof InvalidArgumentException || $exception instanceof RuntimeException) ? 422 : 500;
             jsonResponse(['error' => $exception->getMessage()], $status);
         }
@@ -798,14 +808,22 @@ function handleReservations(string $method, array $segments): void
         $roomCount = count($roomIds);
         $existingRequests = fetchReservationRoomRequests((int) $id, $pdo);
         $roomRequestsChanged = array_key_exists('room_requests', $data);
-        $roomRequests = $roomRequestsChanged
-            ? normalizeReservationRoomRequests($pdo, is_array($data['room_requests']) ? $data['room_requests'] : [])
-            : $existingRequests;
+        try {
+            $roomRequests = $roomRequestsChanged
+                ? normalizeReservationRoomRequests($pdo, is_array($data['room_requests']) ? $data['room_requests'] : [])
+                : $existingRequests;
+        } catch (InvalidArgumentException $exception) {
+            jsonResponse(['error' => $exception->getMessage()], 422);
+        }
 
         if ($roomCount > 0) {
             ensureRoomCapacity($pdo, $roomIds, $guestCount);
         } elseif (!empty($roomRequests)) {
-            ensureRoomRequestCapacity($roomRequests, $guestCount);
+            try {
+                ensureRoomRequestCapacity($roomRequests, $guestCount);
+            } catch (InvalidArgumentException $exception) {
+                jsonResponse(['error' => $exception->getMessage()], 422);
+            }
         } else {
             jsonResponse(['error' => 'Bitte mindestens eine Zimmerkategorie oder ein Zimmer zuweisen.'], 422);
         }
@@ -933,7 +951,9 @@ function handleReservations(string $method, array $segments): void
             $pdo->commit();
             jsonResponse(['updated' => true]);
         } catch (Throwable $exception) {
-            $pdo->rollBack();
+            if ($pdo->inTransaction()) {
+                $pdo->rollBack();
+            }
             $status = ($exception instanceof InvalidArgumentException || $exception instanceof RuntimeException) ? 422 : 500;
             jsonResponse(['error' => $exception->getMessage()], $status);
         }
@@ -1273,15 +1293,15 @@ function normalizeReservationRoomRequests(PDO $pdo, array $requests): array
     $typeIds = [];
     foreach ($requests as $request) {
         if (!is_array($request)) {
-            jsonResponse(['error' => 'room_requests entries must be objects with room_type_id and quantity.'], 422);
+            throw new InvalidArgumentException('room_requests entries must be objects with room_type_id and quantity.');
         }
         $roomTypeId = isset($request['room_type_id']) ? (int) $request['room_type_id'] : 0;
         if ($roomTypeId <= 0) {
-            jsonResponse(['error' => 'room_type_id is required for each room request.'], 422);
+            throw new InvalidArgumentException('room_type_id is required for each room request.');
         }
         $quantity = isset($request['quantity']) ? (int) $request['quantity'] : 1;
         if ($quantity <= 0) {
-            jsonResponse(['error' => 'quantity must be at least 1 for each room request.'], 422);
+            throw new InvalidArgumentException('quantity must be at least 1 for each room request.');
         }
         $normalized[] = [
             'room_type_id' => $roomTypeId,
@@ -1299,7 +1319,7 @@ function normalizeReservationRoomRequests(PDO $pdo, array $requests): array
     }
 
     if (count($roomTypes) !== count($typeIds)) {
-        jsonResponse(['error' => 'Eine angegebene Zimmerkategorie wurde nicht gefunden.'], 422);
+        throw new InvalidArgumentException('Eine angegebene Zimmerkategorie wurde nicht gefunden.');
     }
 
     $aggregated = [];
@@ -1310,7 +1330,7 @@ function normalizeReservationRoomRequests(PDO $pdo, array $requests): array
             $capacity = (int) ($type['base_occupancy'] ?? 0);
         }
         if ($capacity <= 0) {
-            jsonResponse(['error' => sprintf('Für die Kategorie %s ist keine Kapazität hinterlegt.', $type['name'] ?? ('#' . $entry['room_type_id']))], 422);
+            throw new InvalidArgumentException(sprintf('Für die Kategorie %s ist keine Kapazität hinterlegt.', $type['name'] ?? ('#' . $entry['room_type_id'])));
         }
 
         if (!isset($aggregated[$entry['room_type_id']])) {
@@ -1355,12 +1375,12 @@ function calculateRoomRequestQuantity(array $requests): int
 function ensureRoomRequestCapacity(array $requests, int $guestCount): void
 {
     if ($guestCount < 1) {
-        jsonResponse(['error' => 'At least one guest is required for a reservation.'], 422);
+        throw new InvalidArgumentException('At least one guest is required for a reservation.');
     }
 
     $capacity = calculateRoomRequestCapacity($requests);
     if ($capacity <= 0) {
-        jsonResponse(['error' => 'Für die ausgewählten Kategorien ist keine Kapazität hinterlegt.'], 422);
+        throw new InvalidArgumentException('Für die ausgewählten Kategorien ist keine Kapazität hinterlegt.');
     }
 
     if ($guestCount > $capacity) {
@@ -1373,14 +1393,12 @@ function ensureRoomRequestCapacity(array $requests, int $guestCount): void
             $requests
         );
 
-        jsonResponse([
-            'error' => sprintf(
-                'Die ausgewählten Kategorien (%s) bieten insgesamt Platz für %d Gäste, angefragt wurden jedoch %d.',
-                implode(', ', $labels),
-                $capacity,
-                $guestCount
-            ),
-        ], 422);
+        throw new InvalidArgumentException(sprintf(
+            'Die ausgewählten Kategorien (%s) bieten insgesamt Platz für %d Gäste, angefragt wurden jedoch %d.',
+            implode(', ', $labels),
+            $capacity,
+            $guestCount
+        ));
     }
 }
 
@@ -1474,7 +1492,7 @@ function normalizeCompanyId(PDO $pdo, mixed $value): ?int
 
     $companyId = (int) $value;
     if ($companyId <= 0) {
-        jsonResponse(['error' => 'company_id must reference an existing company.'], 422);
+        throw new InvalidArgumentException('company_id must reference an existing company.');
     }
 
     ensureCompanyExists($pdo, $companyId);
@@ -1487,7 +1505,7 @@ function ensureCompanyExists(PDO $pdo, int $companyId): void
     $stmt = $pdo->prepare('SELECT id FROM companies WHERE id = :id');
     $stmt->execute(['id' => $companyId]);
     if ($stmt->fetchColumn() === false) {
-        jsonResponse(['error' => 'company_id must reference an existing company.'], 422);
+        throw new InvalidArgumentException('company_id must reference an existing company.');
     }
 }
 
