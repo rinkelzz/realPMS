@@ -788,6 +788,16 @@ function handleReservations(string $method, array $segments): void
             jsonResponse(['error' => 'guest_id must reference an existing guest.'], 422);
         }
 
+        if (!validateDate($targetCheckIn) || !validateDate($targetCheckOut)) {
+            jsonResponse(['error' => 'Ungültige Datumsangaben für An- oder Abreise.'], 422);
+        }
+
+        $checkInDate = new DateTimeImmutable($targetCheckIn);
+        $checkOutDate = new DateTimeImmutable($targetCheckOut);
+        if ($checkOutDate <= $checkInDate) {
+            jsonResponse(['error' => 'Das Abreisedatum muss nach dem Anreisedatum liegen.'], 422);
+        }
+
         $guestCount = calculateGuestCount($targetAdults, $targetChildren);
         if ($guestCount < 1) {
             jsonResponse(['error' => 'At least one guest is required for a reservation.'], 422);
