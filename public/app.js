@@ -135,6 +135,9 @@ const invoiceLogoForm = document.getElementById('invoice-logo-form');
 const invoiceLogoInput = invoiceLogoForm ? invoiceLogoForm.querySelector('input[type="file"]') : null;
 const invoiceLogoPreview = document.getElementById('invoice-logo-preview');
 const removeInvoiceLogoButton = document.getElementById('remove-invoice-logo');
+const systemUpdateMessage = document.getElementById('system-update-message');
+const systemUpdateLog = document.getElementById('system-update-log');
+const runSystemUpdateButton = document.getElementById('run-system-update');
 
 let guestLookupDebounceId = null;
 let guestLookupRequestId = 0;
@@ -169,6 +172,63 @@ function showMessage(message, type = 'info', timeout = 4000) {
             notificationEl.className = 'notification';
         }, timeout);
     }
+}
+
+function setSystemUpdateMessage(message, type = 'info') {
+    if (!systemUpdateMessage) {
+        return;
+    }
+    const normalizedType = type === 'success' || type === 'error' ? type : 'info';
+    systemUpdateMessage.textContent = message;
+    systemUpdateMessage.className = `system-update-message small-text ${normalizedType}`;
+}
+
+function renderSystemUpdateLog(logEntries) {
+    if (!systemUpdateLog) {
+        return;
+    }
+    if (!Array.isArray(logEntries) || logEntries.length === 0) {
+        systemUpdateLog.innerHTML = '';
+        systemUpdateLog.classList.add('hidden');
+        return;
+    }
+
+    const rows = logEntries.map((entry, index) => {
+        const label = entry && entry.label ? entry.label : `Schritt ${index + 1}`;
+        const command = entry && entry.command ? entry.command : '—';
+        const exitCode = entry && entry.exit_code !== undefined && entry.exit_code !== null && entry.exit_code !== ''
+            ? String(entry.exit_code)
+            : '—';
+        const output = entry && entry.output ? entry.output : '';
+        const outputHtml = output
+            ? `<pre>${escapeHtml(output)}</pre>`
+            : '<span class="muted">Keine Ausgabe</span>';
+        return `
+            <tr>
+                <td>${escapeHtml(label)}</td>
+                <td><code>${escapeHtml(command)}</code></td>
+                <td>${escapeHtml(exitCode)}</td>
+                <td>${outputHtml}</td>
+            </tr>
+        `;
+    }).join('');
+
+    systemUpdateLog.innerHTML = `
+        <table>
+            <thead>
+                <tr>
+                    <th>Schritt</th>
+                    <th>Befehl</th>
+                    <th>Exit-Code</th>
+                    <th>Ausgabe</th>
+                </tr>
+            </thead>
+            <tbody>
+                ${rows}
+            </tbody>
+        </table>
+    `;
+    systemUpdateLog.classList.remove('hidden');
 }
 
 function requireToken() {
@@ -2529,6 +2589,71 @@ async function loadSettings(force = false) {
     }
 }
 
+async function runSystemUpdate() {
+    if (!requireToken() || !runSystemUpdateButton) {
+        return;
+    }
+
+    const originalText = runSystemUpdateButton.textContent;
+    runSystemUpdateButton.disabled = true;
+    runSystemUpdateButton.textContent = 'Update läuft…';
+    setSystemUpdateMessage('Update wird ausgeführt…', 'info');
+    renderSystemUpdateLog([]);
+
+    try {
+        const response = await fetch(`../backend/update.php?token=${encodeURIComponent(state.token)}&format=json`, {
+            headers: {
+                Accept: 'application/json',
+            },
+        });
+
+        let data = null;
+        try {
+            data = await response.json();
+        } catch (parseError) {
+            data = null;
+        }
+
+        const logEntries = data && Array.isArray(data.log) ? data.log : [];
+        if (logEntries.length > 0) {
+            renderSystemUpdateLog(logEntries);
+        }
+
+        if (!response.ok || !data || typeof data !== 'object') {
+            const message = data && typeof data.message === 'string'
+                ? data.message
+                : `Update fehlgeschlagen (Status ${response.status})`;
+            throw new Error(message);
+        }
+
+        if (!data.success) {
+            const message = typeof data.message === 'string' && data.message !== ''
+                ? data.message
+                : 'Update fehlgeschlagen.';
+            if (logEntries.length === 0) {
+                renderSystemUpdateLog([]);
+            }
+            throw new Error(message);
+        }
+
+        setSystemUpdateMessage(data.message || 'Update erfolgreich abgeschlossen.', 'success');
+        if (logEntries.length === 0) {
+            renderSystemUpdateLog([]);
+        }
+        showMessage('System wurde aktualisiert.', 'success');
+    } catch (error) {
+        const message = error instanceof Error && error.message ? error.message : 'Update fehlgeschlagen.';
+        setSystemUpdateMessage(message, 'error');
+        if (systemUpdateLog && systemUpdateLog.innerHTML !== '') {
+            systemUpdateLog.classList.remove('hidden');
+        }
+        showMessage(message, 'error');
+    } finally {
+        runSystemUpdateButton.disabled = false;
+        runSystemUpdateButton.textContent = originalText || 'Update starten';
+    }
+}
+
 async function loadArticles(force = false) {
     if (!requireToken()) {
         return;
@@ -3173,6 +3298,9 @@ document.getElementById('reload-guests').addEventListener('click', () => loadGue
 document.getElementById('reload-integrations').addEventListener('click', () => loadIntegrations(true));
 if (settingsReloadButton) {
     settingsReloadButton.addEventListener('click', () => loadSettings(true));
+}
+if (runSystemUpdateButton) {
+    runSystemUpdateButton.addEventListener('click', () => runSystemUpdate());
 }
 document.getElementById('refresh-dashboard').addEventListener('click', () => loadDashboard(true));
 dashboardDateInput.addEventListener('change', () => loadDashboard(true));

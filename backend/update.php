@@ -203,9 +203,17 @@ function respond(bool $success, string $message, int $status = 200, array $log =
         exit($success ? 0 : 1);
     }
 
+    $format = determineResponseFormat();
     http_response_code($status);
-    header('Content-Type: application/json');
-    echo json_encode($payload, JSON_PRETTY_PRINT);
+
+    if ($format === 'json') {
+        header('Content-Type: application/json');
+        echo json_encode($payload, JSON_PRETTY_PRINT);
+        exit;
+    }
+
+    header('Content-Type: text/html; charset=utf-8');
+    echo renderHtmlResponse($payload);
     exit;
 }
 
@@ -271,4 +279,276 @@ function deleteDirectory(string $path): void
     }
 
     @rmdir($path);
+}
+
+function determineResponseFormat(): string
+{
+    if (isset($_GET['format']) && strtolower((string) $_GET['format']) === 'json') {
+        return 'json';
+    }
+
+    $accept = $_SERVER['HTTP_ACCEPT'] ?? '';
+    if ($accept === '') {
+        return 'html';
+    }
+
+    if (str_contains($accept, 'application/json') && !str_contains($accept, 'text/html')) {
+        return 'json';
+    }
+
+    return 'html';
+}
+
+function renderHtmlResponse(array $payload): string
+{
+    $success = $payload['success'] ?? false;
+    $message = htmlspecialchars((string) ($payload['message'] ?? ''), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+    $statusClass = $success ? 'status-success' : 'status-error';
+    $statusLabel = $success ? 'Erfolg' : 'Fehler';
+
+    try {
+        $timestamp = (new DateTimeImmutable('now'))
+            ->setTimezone(new DateTimeZone(date_default_timezone_get()))
+            ->format('d.m.Y H:i:s');
+    } catch (Throwable $exception) {
+        $timestamp = date('d.m.Y H:i:s');
+    }
+
+    $logRows = '';
+    foreach (($payload['log'] ?? []) as $index => $entry) {
+        $label = ($entry['label'] ?? '') !== ''
+            ? (string) $entry['label']
+            : sprintf('Schritt %d', $index + 1);
+        $step = htmlspecialchars($label, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+        $command = htmlspecialchars((string) ($entry['command'] ?? '—'), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+        $exitCode = $entry['exit_code'] ?? null;
+        $exitCodeText = $exitCode === null || $exitCode === ''
+            ? '—'
+            : htmlspecialchars((string) $exitCode, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+        $output = htmlspecialchars((string) ($entry['output'] ?? ''), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+        $outputHtml = $output !== ''
+            ? '<pre>' . nl2br($output) . '</pre>'
+            : '<span class="muted">Keine Ausgabe</span>';
+
+        $logRows .= sprintf(
+            '<tr><td>%s</td><td><code>%s</code></td><td class="exit-code">%s</td><td>%s</td></tr>',
+            $step,
+            $command,
+            $exitCodeText,
+            $outputHtml,
+        );
+    }
+
+    if ($logRows === '') {
+        $logRows = '<tr><td colspan="4" class="muted">Keine Protokolleinträge vorhanden.</td></tr>';
+    }
+
+    return <<<HTML
+<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>System-Update · realPMS</title>
+    <style>
+        :root {
+            color-scheme: light dark;
+            font-family: "Inter", "Segoe UI", system-ui, sans-serif;
+            --surface: #ffffff;
+            --surface-alt: #f8fafc;
+            --border: #d1d5db;
+            --muted: #64748b;
+            --success: #16a34a;
+            --error: #dc2626;
+        }
+
+        body {
+            margin: 0;
+            padding: 2rem 1.25rem;
+            background: linear-gradient(180deg, #eef2ff 0%, #ffffff 100%);
+            color: #0f172a;
+        }
+
+        .container {
+            max-width: 960px;
+            margin: 0 auto;
+            background: var(--surface);
+            border-radius: 1rem;
+            box-shadow: 0 25px 45px rgba(15, 23, 42, 0.12);
+            overflow: hidden;
+            border: 1px solid rgba(99, 102, 241, 0.15);
+        }
+
+        header {
+            padding: 1.75rem 2rem 1.25rem;
+            background: linear-gradient(135deg, #2563eb 0%, #4f46e5 100%);
+            color: #ffffff;
+        }
+
+        header h1 {
+            margin: 0 0 .35rem;
+            font-size: 1.75rem;
+        }
+
+        header p {
+            margin: 0;
+            opacity: 0.8;
+        }
+
+        main {
+            padding: 2rem;
+            display: flex;
+            flex-direction: column;
+            gap: 1.5rem;
+        }
+
+        .status-card {
+            border-radius: 1rem;
+            padding: 1.5rem;
+            background: var(--surface-alt);
+            border: 1px solid var(--border);
+        }
+
+        .status-card h2 {
+            margin: 0 0 .5rem;
+        }
+
+        .status-card p {
+            margin: 0;
+        }
+
+        .status-card .timestamp {
+            display: block;
+            margin-top: .5rem;
+            color: var(--muted);
+            font-size: .9rem;
+        }
+
+        .status-card .status-success {
+            color: var(--success);
+            font-weight: 600;
+        }
+
+        .status-card .status-error {
+            color: var(--error);
+            font-weight: 600;
+        }
+
+        section h3 {
+            margin: 0 0 .75rem;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            overflow: hidden;
+            border-radius: .75rem;
+            border: 1px solid var(--border);
+        }
+
+        thead {
+            background: #e0e7ff;
+            color: #1e1b4b;
+            text-align: left;
+        }
+
+        th,
+        td {
+            padding: .85rem 1rem;
+            vertical-align: top;
+            border-bottom: 1px solid var(--border);
+            font-size: .95rem;
+        }
+
+        tbody tr:last-child td {
+            border-bottom: none;
+        }
+
+        code {
+            background: rgba(15, 23, 42, 0.05);
+            padding: .15rem .4rem;
+            border-radius: .35rem;
+            font-size: .85rem;
+            display: inline-block;
+        }
+
+        pre {
+            margin: 0;
+            white-space: pre-wrap;
+            word-break: break-word;
+            font-family: "JetBrains Mono", "Fira Code", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+            background: rgba(15, 23, 42, 0.05);
+            padding: .75rem;
+            border-radius: .5rem;
+            line-height: 1.4;
+        }
+
+        .muted {
+            color: var(--muted);
+        }
+
+        .exit-code {
+            width: 5rem;
+            text-align: center;
+            font-weight: 600;
+        }
+
+        footer {
+            padding: 0 2rem 2rem;
+            color: var(--muted);
+            font-size: .85rem;
+        }
+
+        @media (max-width: 720px) {
+            main {
+                padding: 1.5rem;
+            }
+
+            th,
+            td {
+                padding: .75rem;
+            }
+
+            code {
+                word-break: break-all;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>System-Update</h1>
+            <p>Aktualisierungsbericht für realPMS</p>
+        </header>
+        <main>
+            <section class="status-card">
+                <h2>Status: <span class="$statusClass">$statusLabel</span></h2>
+                <p>$message</p>
+                <span class="timestamp">Ausgeführt am $timestamp</span>
+            </section>
+            <section>
+                <h3>Protokoll</h3>
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Schritt</th>
+                            <th>Befehl</th>
+                            <th>Exit-Code</th>
+                            <th>Ausgabe</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        $logRows
+                    </tbody>
+                </table>
+            </section>
+        </main>
+        <footer>
+            realPMS · Automatisiertes Update-Skript
+        </footer>
+    </div>
+</body>
+</html>
+HTML;
 }
