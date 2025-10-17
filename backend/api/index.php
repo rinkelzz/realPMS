@@ -1042,6 +1042,12 @@ function validateReservationPayload(array $data): void
         }
     }
 
+    $checkIn = new DateTimeImmutable($data['check_in_date']);
+    $checkOut = new DateTimeImmutable($data['check_out_date']);
+    if ($checkOut <= $checkIn) {
+        jsonResponse(['error' => 'check_out_date must be after check_in_date.'], 422);
+    }
+
     if (!isset($data['guest_id']) && empty($data['guest'])) {
         jsonResponse(['error' => 'Guest information is required.'], 422);
     }
