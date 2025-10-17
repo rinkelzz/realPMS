@@ -3,6 +3,7 @@
 declare(strict_types=1);
 
 require __DIR__ . '/../bootstrap.php';
+require __DIR__ . '/rate_calendar_helpers.php';
 
 const RESERVATION_STATUSES = [
     'tentative',
@@ -104,6 +105,12 @@ switch ($resource) {
     case 'rate-plans':
         handleRatePlans($method, $segments);
         break;
+    case 'rate-calendars':
+        handleRateCalendars($method, $segments);
+        break;
+    case 'rate-calendar-rules':
+        handleRateCalendarRules($method, $segments);
+        break;
     case 'rooms':
         handleRooms($method, $segments);
         break;
@@ -130,6 +137,9 @@ switch ($resource) {
         break;
     case 'articles':
         handleArticles($method, $segments);
+        break;
+    case 'cancellation-policies':
+        handleCancellationPolicies($method, $segments);
         break;
     case 'users':
         handleUsers($method, $segments);
@@ -226,9 +236,17 @@ function handleRatePlans(string $method, array $segments): void
     $pdo = db();
     $id = $segments[1] ?? null;
 
+    if ($id !== null && isset($segments[2]) && $segments[2] === 'calendar') {
+        if ($method !== 'GET') {
+            jsonResponse(['error' => 'Unsupported method.'], 405);
+        }
+        handleRatePlanCalendar($pdo, (int) $id);
+        return;
+    }
+
     if ($method === 'GET') {
         if ($id !== null) {
-            $stmt = $pdo->prepare('SELECT * FROM rate_plans WHERE id = :id');
+            $stmt = $pdo->prepare('SELECT rp.*, cp.name AS cancellation_policy_name FROM rate_plans rp LEFT JOIN cancellation_policies cp ON cp.id = rp.cancellation_policy_id WHERE rp.id = :id');
             $stmt->execute(['id' => $id]);
             $plan = $stmt->fetch();
             if (!$plan) {
@@ -237,7 +255,7 @@ function handleRatePlans(string $method, array $segments): void
             jsonResponse($plan);
         }
 
-        $stmt = $pdo->query('SELECT * FROM rate_plans ORDER BY name');
+        $stmt = $pdo->query('SELECT rp.*, cp.name AS cancellation_policy_name FROM rate_plans rp LEFT JOIN cancellation_policies cp ON cp.id = rp.cancellation_policy_id ORDER BY rp.name');
         jsonResponse($stmt->fetchAll());
     }
 
@@ -247,13 +265,24 @@ function handleRatePlans(string $method, array $segments): void
             jsonResponse(['error' => 'Name is required.'], 422);
         }
 
-        $stmt = $pdo->prepare('INSERT INTO rate_plans (name, description, base_price, currency, cancellation_policy, created_at, updated_at) VALUES (:name, :description, :base_price, :currency, :cancellation_policy, :created_at, :updated_at)');
+        $cancellationPolicyId = null;
+        if (!empty($data['cancellation_policy_id'])) {
+            $policyStmt = $pdo->prepare('SELECT id FROM cancellation_policies WHERE id = :id');
+            $policyStmt->execute(['id' => $data['cancellation_policy_id']]);
+            if (!$policyStmt->fetchColumn()) {
+                jsonResponse(['error' => 'Cancellation policy not found.'], 422);
+            }
+            $cancellationPolicyId = (int) $data['cancellation_policy_id'];
+        }
+
+        $stmt = $pdo->prepare('INSERT INTO rate_plans (name, description, base_price, currency, cancellation_policy, cancellation_policy_id, created_at, updated_at) VALUES (:name, :description, :base_price, :currency, :cancellation_policy, :cancellation_policy_id, :created_at, :updated_at)');
         $stmt->execute([
             'name' => $data['name'],
             'description' => $data['description'] ?? null,
             'base_price' => $data['base_price'] ?? 0,
             'currency' => $data['currency'] ?? 'EUR',
             'cancellation_policy' => $data['cancellation_policy'] ?? null,
+            'cancellation_policy_id' => $cancellationPolicyId,
             'created_at' => now(),
             'updated_at' => now(),
         ]);
@@ -263,13 +292,26 @@ function handleRatePlans(string $method, array $segments): void
 
     if (($method === 'PUT' || $method === 'PATCH') && $id !== null) {
         $data = parseJsonBody();
-        $fields = ['name', 'description', 'base_price', 'currency', 'cancellation_policy'];
+        $fields = ['name', 'description', 'base_price', 'currency', 'cancellation_policy', 'cancellation_policy_id'];
         $updates = [];
         $params = ['id' => $id];
         foreach ($fields as $field) {
             if (array_key_exists($field, $data)) {
+                if ($field === 'cancellation_policy_id') {
+                    if ($data[$field] === null || $data[$field] === '') {
+                        $params[$field] = null;
+                    } else {
+                        $policyStmt = $pdo->prepare('SELECT id FROM cancellation_policies WHERE id = :id');
+                        $policyStmt->execute(['id' => $data[$field]]);
+                        if (!$policyStmt->fetchColumn()) {
+                            jsonResponse(['error' => 'Cancellation policy not found.'], 422);
+                        }
+                        $params[$field] = (int) $data[$field];
+                    }
+                } else {
+                    $params[$field] = $data[$field];
+                }
                 $updates[] = sprintf('%s = :%s', $field, $field);
-                $params[$field] = $data[$field];
             }
         }
 
@@ -285,7 +327,496 @@ function handleRatePlans(string $method, array $segments): void
         jsonResponse(['updated' => true]);
     }
 
+    if ($method === 'DELETE' && $id !== null) {
+        $stmt = $pdo->prepare('DELETE FROM rate_plans WHERE id = :id');
+        try {
+            $stmt->execute(['id' => $id]);
+        } catch (PDOException $exception) {
+            jsonResponse(['error' => 'Rate plan cannot be deleted while in use.'], 409);
+        }
+        jsonResponse(['deleted' => true]);
+    }
+
     jsonResponse(['error' => 'Unsupported method.'], 405);
+}
+
+function handleCancellationPolicies(string $method, array $segments): void
+{
+    $pdo = db();
+    $id = $segments[1] ?? null;
+
+    if ($method === 'GET') {
+        if ($id !== null) {
+            $stmt = $pdo->prepare('SELECT * FROM cancellation_policies WHERE id = :id');
+            $stmt->execute(['id' => $id]);
+            $policy = $stmt->fetch();
+            if (!$policy) {
+                jsonResponse(['error' => 'Cancellation policy not found.'], 404);
+            }
+            jsonResponse($policy);
+        }
+
+        $stmt = $pdo->query('SELECT * FROM cancellation_policies ORDER BY name');
+        jsonResponse($stmt->fetchAll());
+    }
+
+    if ($method === 'POST') {
+        $data = parseJsonBody();
+        if (empty($data['name'])) {
+            jsonResponse(['error' => 'Name is required.'], 422);
+        }
+        $penaltyType = $data['penalty_type'] ?? 'percent';
+        $allowedTypes = ['percent', 'fixed', 'nights'];
+        if (!in_array($penaltyType, $allowedTypes, true)) {
+            jsonResponse(['error' => 'Invalid penalty_type.'], 422);
+        }
+        $penaltyValue = isset($data['penalty_value']) ? (float) $data['penalty_value'] : 0.0;
+        if ($penaltyValue < 0) {
+            jsonResponse(['error' => 'penalty_value must be positive.'], 422);
+        }
+        $freeUntil = isset($data['free_until_days']) && $data['free_until_days'] !== ''
+            ? max(0, (int) $data['free_until_days'])
+            : null;
+
+        $stmt = $pdo->prepare('INSERT INTO cancellation_policies (name, description, free_until_days, penalty_type, penalty_value, created_at, updated_at) VALUES (:name, :description, :free_until_days, :penalty_type, :penalty_value, :created_at, :updated_at)');
+        $stmt->execute([
+            'name' => $data['name'],
+            'description' => $data['description'] ?? null,
+            'free_until_days' => $freeUntil,
+            'penalty_type' => $penaltyType,
+            'penalty_value' => $penaltyValue,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        jsonResponse(['id' => $pdo->lastInsertId()], 201);
+    }
+
+    if (($method === 'PUT' || $method === 'PATCH') && $id !== null) {
+        $data = parseJsonBody();
+        $fields = ['name', 'description', 'free_until_days', 'penalty_type', 'penalty_value'];
+        $updates = [];
+        $params = ['id' => $id];
+        foreach ($fields as $field) {
+            if (array_key_exists($field, $data)) {
+                if ($field === 'penalty_type') {
+                    $allowedTypes = ['percent', 'fixed', 'nights'];
+                    if (!in_array($data[$field], $allowedTypes, true)) {
+                        jsonResponse(['error' => 'Invalid penalty_type.'], 422);
+                    }
+                }
+                if ($field === 'penalty_value') {
+                    $value = (float) $data[$field];
+                    if ($value < 0) {
+                        jsonResponse(['error' => 'penalty_value must be positive.'], 422);
+                    }
+                }
+                if ($field === 'free_until_days') {
+                    $params[$field] = $data[$field] === null || $data[$field] === ''
+                        ? null
+                        : max(0, (int) $data[$field]);
+                    $updates[] = sprintf('%s = :%s', $field, $field);
+                    continue;
+                }
+                $params[$field] = $data[$field];
+                $updates[] = sprintf('%s = :%s', $field, $field);
+            }
+        }
+
+        if (!$updates) {
+            jsonResponse(['error' => 'No changes supplied.'], 422);
+        }
+
+        $updates[] = 'updated_at = :updated_at';
+        $params['updated_at'] = now();
+        $stmt = $pdo->prepare(sprintf('UPDATE cancellation_policies SET %s WHERE id = :id', implode(', ', $updates)));
+        $stmt->execute($params);
+        jsonResponse(['updated' => true]);
+    }
+
+    if ($method === 'DELETE' && $id !== null) {
+        $stmt = $pdo->prepare('DELETE FROM cancellation_policies WHERE id = :id');
+        try {
+            $stmt->execute(['id' => $id]);
+        } catch (PDOException $exception) {
+            jsonResponse(['error' => 'Cancellation policy cannot be deleted while in use.'], 409);
+        }
+        jsonResponse(['deleted' => true]);
+    }
+
+    jsonResponse(['error' => 'Unsupported method.'], 405);
+}
+
+function handleRateCalendars(string $method, array $segments): void
+{
+    $pdo = db();
+    $id = $segments[1] ?? null;
+
+    if ($id !== null && isset($segments[2]) && $segments[2] === 'rules') {
+        $extra = array_slice($segments, 3);
+        handleRateCalendarRulesForCalendar($pdo, $method, (int) $id, $extra);
+        return;
+    }
+
+    if ($method === 'GET') {
+        if ($id !== null) {
+            $stmt = $pdo->prepare('SELECT rc.*, COUNT(rcr.id) AS rule_count FROM rate_calendars rc LEFT JOIN rate_calendar_rules rcr ON rcr.rate_calendar_id = rc.id WHERE rc.id = :id GROUP BY rc.id');
+            $stmt->execute(['id' => $id]);
+            $calendar = $stmt->fetch();
+            if (!$calendar) {
+                jsonResponse(['error' => 'Calendar not found.'], 404);
+            }
+            jsonResponse($calendar);
+        }
+
+        $query = 'SELECT rc.*, COUNT(rcr.id) AS rule_count FROM rate_calendars rc LEFT JOIN rate_calendar_rules rcr ON rcr.rate_calendar_id = rc.id';
+        $conditions = [];
+        $params = [];
+        if (isset($_GET['rate_plan_id'])) {
+            $conditions[] = 'rc.rate_plan_id = :rate_plan_id';
+            $params['rate_plan_id'] = (int) $_GET['rate_plan_id'];
+        }
+        if ($conditions) {
+            $query .= ' WHERE ' . implode(' AND ', $conditions);
+        }
+        $query .= ' GROUP BY rc.id ORDER BY rc.name';
+        $stmt = $pdo->prepare($query);
+        $stmt->execute($params);
+        jsonResponse($stmt->fetchAll());
+    }
+
+    if ($method === 'POST') {
+        $data = parseJsonBody();
+        if (empty($data['name']) || empty($data['rate_plan_id'])) {
+            jsonResponse(['error' => 'name and rate_plan_id are required.'], 422);
+        }
+        $planStmt = $pdo->prepare('SELECT id FROM rate_plans WHERE id = :id');
+        $planStmt->execute(['id' => $data['rate_plan_id']]);
+        if (!$planStmt->fetchColumn()) {
+            jsonResponse(['error' => 'Rate plan not found.'], 422);
+        }
+
+        $stmt = $pdo->prepare('INSERT INTO rate_calendars (rate_plan_id, name, description, created_at, updated_at) VALUES (:rate_plan_id, :name, :description, :created_at, :updated_at)');
+        $stmt->execute([
+            'rate_plan_id' => $data['rate_plan_id'],
+            'name' => $data['name'],
+            'description' => $data['description'] ?? null,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+        jsonResponse(['id' => $pdo->lastInsertId()], 201);
+    }
+
+    if (($method === 'PUT' || $method === 'PATCH') && $id !== null) {
+        $data = parseJsonBody();
+        $fields = ['name', 'description', 'rate_plan_id'];
+        $updates = [];
+        $params = ['id' => $id];
+        foreach ($fields as $field) {
+            if (array_key_exists($field, $data)) {
+                if ($field === 'rate_plan_id') {
+                    if ($data[$field] === null || $data[$field] === '') {
+                        jsonResponse(['error' => 'rate_plan_id cannot be empty.'], 422);
+                    }
+                    $planStmt = $pdo->prepare('SELECT id FROM rate_plans WHERE id = :id');
+                    $planStmt->execute(['id' => $data[$field]]);
+                    if (!$planStmt->fetchColumn()) {
+                        jsonResponse(['error' => 'Rate plan not found.'], 422);
+                    }
+                    $params[$field] = $data[$field];
+                } else {
+                    $params[$field] = $data[$field];
+                }
+                $updates[] = sprintf('%s = :%s', $field, $field);
+            }
+        }
+
+        if (!$updates) {
+            jsonResponse(['error' => 'No changes supplied.'], 422);
+        }
+
+        $updates[] = 'updated_at = :updated_at';
+        $params['updated_at'] = now();
+        $stmt = $pdo->prepare(sprintf('UPDATE rate_calendars SET %s WHERE id = :id', implode(', ', $updates)));
+        $stmt->execute($params);
+        jsonResponse(['updated' => true]);
+    }
+
+    if ($method === 'DELETE' && $id !== null) {
+        $stmt = $pdo->prepare('DELETE FROM rate_calendars WHERE id = :id');
+        $stmt->execute(['id' => $id]);
+        jsonResponse(['deleted' => true]);
+    }
+
+    jsonResponse(['error' => 'Unsupported method.'], 405);
+}
+
+function handleRateCalendarRulesForCalendar(PDO $pdo, string $method, int $calendarId, array $extraSegments): void
+{
+    $calendarStmt = $pdo->prepare('SELECT rc.*, rp.currency FROM rate_calendars rc JOIN rate_plans rp ON rp.id = rc.rate_plan_id WHERE rc.id = :id');
+    $calendarStmt->execute(['id' => $calendarId]);
+    $calendar = $calendarStmt->fetch();
+    if (!$calendar) {
+        jsonResponse(['error' => 'Calendar not found.'], 404);
+    }
+
+    if ($method === 'GET') {
+        $stmt = $pdo->prepare('SELECT rcr.*, cp.name AS cancellation_policy_name, cp.penalty_type, cp.penalty_value, cp.free_until_days, :currency AS currency FROM rate_calendar_rules rcr LEFT JOIN cancellation_policies cp ON cp.id = rcr.cancellation_policy_id WHERE rcr.rate_calendar_id = :calendar_id ORDER BY rcr.start_date, rcr.end_date');
+        $stmt->execute([
+            'calendar_id' => $calendarId,
+            'currency' => $calendar['currency'] ?? 'EUR',
+        ]);
+        $rules = $stmt->fetchAll();
+        foreach ($rules as &$rule) {
+            $rule['weekdays'] = deserializeWeekdayValues($rule['weekdays'] ?? null);
+            $rule['closed_for_arrival'] = (bool) ($rule['closed_for_arrival'] ?? 0);
+            $rule['closed_for_departure'] = (bool) ($rule['closed_for_departure'] ?? 0);
+        }
+        jsonResponse($rules);
+    }
+
+    if ($method === 'POST' && empty($extraSegments)) {
+        $data = parseJsonBody();
+        foreach (['start_date', 'end_date'] as $required) {
+            if (empty($data[$required]) || !validateDate($data[$required])) {
+                jsonResponse(['error' => sprintf('%s must be a valid date (Y-m-d).', $required)], 422);
+            }
+        }
+        if ($data['end_date'] < $data['start_date']) {
+            jsonResponse(['error' => 'end_date must be after start_date.'], 422);
+        }
+        $weekdays = isset($data['weekdays']) ? normalizeWeekdayValuesInput($data['weekdays']) : [];
+        $serializedWeekdays = serializeWeekdays($weekdays);
+        $cancellationPolicyId = null;
+        if (!empty($data['cancellation_policy_id'])) {
+            $policyStmt = $pdo->prepare('SELECT id FROM cancellation_policies WHERE id = :id');
+            $policyStmt->execute(['id' => $data['cancellation_policy_id']]);
+            if (!$policyStmt->fetchColumn()) {
+                jsonResponse(['error' => 'Cancellation policy not found.'], 422);
+            }
+            $cancellationPolicyId = (int) $data['cancellation_policy_id'];
+        }
+        $stmt = $pdo->prepare('INSERT INTO rate_calendar_rules (rate_calendar_id, start_date, end_date, price, weekdays, cancellation_policy_id, closed_for_arrival, closed_for_departure, created_at, updated_at) VALUES (:calendar_id, :start_date, :end_date, :price, :weekdays, :cancellation_policy_id, :closed_for_arrival, :closed_for_departure, :created_at, :updated_at)');
+        $stmt->execute([
+            'calendar_id' => $calendarId,
+            'start_date' => $data['start_date'],
+            'end_date' => $data['end_date'],
+            'price' => isset($data['price']) ? $data['price'] : null,
+            'weekdays' => $serializedWeekdays,
+            'cancellation_policy_id' => $cancellationPolicyId,
+            'closed_for_arrival' => !empty($data['closed_for_arrival']) ? 1 : 0,
+            'closed_for_departure' => !empty($data['closed_for_departure']) ? 1 : 0,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+        jsonResponse(['id' => $pdo->lastInsertId()], 201);
+    }
+
+    if ($method === 'POST' && isset($extraSegments[0]) && $extraSegments[0] === 'batch') {
+        $data = parseJsonBody();
+        foreach (['start_date', 'end_date'] as $required) {
+            if (empty($data[$required]) || !validateDate($data[$required])) {
+                jsonResponse(['error' => sprintf('%s must be a valid date (Y-m-d).', $required)], 422);
+            }
+        }
+        if ($data['end_date'] < $data['start_date']) {
+            jsonResponse(['error' => 'end_date must be after start_date.'], 422);
+        }
+        if (!isset($data['price'])) {
+            jsonResponse(['error' => 'price is required for batch updates.'], 422);
+        }
+        $weekdays = isset($data['weekdays']) ? normalizeWeekdayValuesInput($data['weekdays']) : [];
+        if (!empty($data['weekend_only']) && !$weekdays) {
+            $weekdays = normalizeWeekdayValuesInput([6, 0]);
+        }
+        $serializedWeekdays = serializeWeekdays($weekdays);
+        $cancellationPolicyId = null;
+        if (!empty($data['cancellation_policy_id'])) {
+            $policyStmt = $pdo->prepare('SELECT id FROM cancellation_policies WHERE id = :id');
+            $policyStmt->execute(['id' => $data['cancellation_policy_id']]);
+            if (!$policyStmt->fetchColumn()) {
+                jsonResponse(['error' => 'Cancellation policy not found.'], 422);
+            }
+            $cancellationPolicyId = (int) $data['cancellation_policy_id'];
+        }
+
+        $start = new DateTimeImmutable($data['start_date']);
+        $end = new DateTimeImmutable($data['end_date']);
+        $periods = [];
+        if (!empty($data['split_by_month'])) {
+            $cursor = $start;
+            while ($cursor <= $end) {
+                $monthEnd = (new DateTimeImmutable($cursor->format('Y-m-01')))->modify('last day of this month');
+                if ($monthEnd > $end) {
+                    $monthEnd = $end;
+                }
+                $periods[] = [$cursor->format('Y-m-d'), $monthEnd->format('Y-m-d')];
+                $cursor = $monthEnd->modify('+1 day');
+            }
+        } else {
+            $periods[] = [$start->format('Y-m-d'), $end->format('Y-m-d')];
+        }
+
+        $pdo->beginTransaction();
+        try {
+            $stmt = $pdo->prepare('INSERT INTO rate_calendar_rules (rate_calendar_id, start_date, end_date, price, weekdays, cancellation_policy_id, closed_for_arrival, closed_for_departure, created_at, updated_at) VALUES (:calendar_id, :start_date, :end_date, :price, :weekdays, :cancellation_policy_id, :closed_for_arrival, :closed_for_departure, :created_at, :updated_at)');
+            foreach ($periods as [$periodStart, $periodEnd]) {
+                $stmt->execute([
+                    'calendar_id' => $calendarId,
+                    'start_date' => $periodStart,
+                    'end_date' => $periodEnd,
+                    'price' => $data['price'],
+                    'weekdays' => $serializedWeekdays,
+                    'cancellation_policy_id' => $cancellationPolicyId,
+                    'closed_for_arrival' => !empty($data['closed_for_arrival']) ? 1 : 0,
+                    'closed_for_departure' => !empty($data['closed_for_departure']) ? 1 : 0,
+                    'created_at' => now(),
+                    'updated_at' => now(),
+                ]);
+            }
+            $pdo->commit();
+        } catch (Throwable $exception) {
+            $pdo->rollBack();
+            jsonResponse(['error' => $exception->getMessage()], 500);
+        }
+
+        jsonResponse(['created' => count($periods)]);
+    }
+
+    jsonResponse(['error' => 'Unsupported method.'], 405);
+}
+
+function handleRateCalendarRules(string $method, array $segments): void
+{
+    $pdo = db();
+    $id = $segments[1] ?? null;
+
+    if ($id === null) {
+        jsonResponse(['error' => 'Rule id required.'], 400);
+    }
+
+    if ($method === 'GET') {
+        $stmt = $pdo->prepare('SELECT * FROM rate_calendar_rules WHERE id = :id');
+        $stmt->execute(['id' => $id]);
+        $rule = $stmt->fetch();
+        if (!$rule) {
+            jsonResponse(['error' => 'Rule not found.'], 404);
+        }
+        $rule['weekdays'] = deserializeWeekdayValues($rule['weekdays'] ?? null);
+        jsonResponse($rule);
+    }
+
+    if ($method === 'DELETE') {
+        $stmt = $pdo->prepare('DELETE FROM rate_calendar_rules WHERE id = :id');
+        $stmt->execute(['id' => $id]);
+        jsonResponse(['deleted' => true]);
+    }
+
+    if ($method === 'PUT' || $method === 'PATCH') {
+        $data = parseJsonBody();
+        $fields = ['start_date', 'end_date', 'price', 'weekdays', 'cancellation_policy_id', 'closed_for_arrival', 'closed_for_departure'];
+        $updates = [];
+        $params = ['id' => $id];
+        foreach ($fields as $field) {
+            if (!array_key_exists($field, $data)) {
+                continue;
+            }
+            if ($field === 'weekdays') {
+                $params['weekdays'] = serializeWeekdays(normalizeWeekdayValuesInput($data[$field] ?? []));
+                $updates[] = 'weekdays = :weekdays';
+                continue;
+            }
+            if ($field === 'cancellation_policy_id') {
+                if ($data[$field] === null || $data[$field] === '') {
+                    $params[$field] = null;
+                } else {
+                    $policyStmt = $pdo->prepare('SELECT id FROM cancellation_policies WHERE id = :id');
+                    $policyStmt->execute(['id' => $data[$field]]);
+                    if (!$policyStmt->fetchColumn()) {
+                        jsonResponse(['error' => 'Cancellation policy not found.'], 422);
+                    }
+                    $params[$field] = (int) $data[$field];
+                }
+                $updates[] = 'cancellation_policy_id = :cancellation_policy_id';
+                continue;
+            }
+            if (in_array($field, ['closed_for_arrival', 'closed_for_departure'], true)) {
+                $params[$field] = !empty($data[$field]) ? 1 : 0;
+                $updates[] = sprintf('%s = :%s', $field, $field);
+                continue;
+            }
+            if (in_array($field, ['start_date', 'end_date'], true)) {
+                if (!validateDate($data[$field])) {
+                    jsonResponse(['error' => sprintf('%s must be a valid date (Y-m-d).', $field)], 422);
+                }
+            }
+            $params[$field] = $data[$field];
+            $updates[] = sprintf('%s = :%s', $field, $field);
+        }
+
+        if (!$updates) {
+            jsonResponse(['error' => 'No changes supplied.'], 422);
+        }
+
+        $updates[] = 'updated_at = :updated_at';
+        $params['updated_at'] = now();
+        $stmt = $pdo->prepare(sprintf('UPDATE rate_calendar_rules SET %s WHERE id = :id', implode(', ', $updates)));
+        $stmt->execute($params);
+        jsonResponse(['updated' => true]);
+    }
+
+    jsonResponse(['error' => 'Unsupported method.'], 405);
+}
+
+function handleRatePlanCalendar(PDO $pdo, int $planId): void
+{
+    $stmt = $pdo->prepare('SELECT * FROM rate_plans WHERE id = :id');
+    $stmt->execute(['id' => $planId]);
+    $plan = $stmt->fetch();
+    if (!$plan) {
+        jsonResponse(['error' => 'Rate plan not found.'], 404);
+    }
+
+    $year = isset($_GET['year']) ? (int) $_GET['year'] : null;
+    $start = $_GET['start'] ?? null;
+    $end = $_GET['end'] ?? null;
+    if ($year) {
+        $start = sprintf('%04d-01-01', $year);
+        $end = sprintf('%04d-12-31', $year);
+    }
+    if (!$start || !$end) {
+        $currentYear = (int) date('Y');
+        $start = sprintf('%04d-01-01', $currentYear);
+        $end = sprintf('%04d-12-31', $currentYear);
+    }
+    if (!validateDate($start) || !validateDate($end)) {
+        jsonResponse(['error' => 'start and end must be valid dates (Y-m-d).'], 422);
+    }
+    if ($end < $start) {
+        jsonResponse(['error' => 'end must be after start.'], 422);
+    }
+
+    $stmt = $pdo->prepare('SELECT rcr.*, rc.name AS calendar_name, rc.id AS rate_calendar_id, cp.name AS cancellation_policy_name, cp.penalty_type, cp.penalty_value, cp.free_until_days FROM rate_calendar_rules rcr JOIN rate_calendars rc ON rc.id = rcr.rate_calendar_id LEFT JOIN cancellation_policies cp ON cp.id = rcr.cancellation_policy_id WHERE rc.rate_plan_id = :plan_id AND rcr.end_date >= :start AND rcr.start_date <= :end');
+    $stmt->execute([
+        'plan_id' => $planId,
+        'start' => $start,
+        'end' => $end,
+    ]);
+    $rules = $stmt->fetchAll();
+    foreach ($rules as &$rule) {
+        $rule['weekdays'] = deserializeWeekdayValues($rule['weekdays'] ?? null);
+    }
+
+    $dailyMap = buildDailyRateMap($rules, $start, $end, (float) ($plan['base_price'] ?? 0.0), $plan['currency'] ?? 'EUR');
+    $days = array_values($dailyMap);
+    jsonResponse([
+        'rate_plan_id' => (int) $planId,
+        'currency' => $plan['currency'] ?? 'EUR',
+        'base_price' => (float) ($plan['base_price'] ?? 0.0),
+        'start' => $start,
+        'end' => $end,
+        'days' => $days,
+    ]);
 }
 
 function handleRooms(string $method, array $segments): void
