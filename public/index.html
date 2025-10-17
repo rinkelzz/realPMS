@@ -243,9 +243,13 @@
                     <label>Name
                         <input type="text" name="name" required>
                     </label>
-                    <label>Grundpreis
-                        <input type="number" name="base_price" min="0" step="0.01">
+                    <label>Basisbelegung
+                        <input type="number" name="base_occupancy" min="1" step="1" value="1" required>
                     </label>
+                    <label>Maximalbelegung
+                        <input type="number" name="max_occupancy" min="1" step="1" value="1" required>
+                    </label>
+                    <p class="muted small-text">Geben Sie an, wie viele Gäste standardmäßig bzw. maximal in dieser Kategorie untergebracht werden können.</p>
                     <label>Beschreibung
                         <textarea name="description" rows="3"></textarea>
                     </label>

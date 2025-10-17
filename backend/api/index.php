@@ -44,6 +44,7 @@ const ARTICLE_CHARGE_SCHEMES = [
 
 const GERMAN_VAT_STANDARD = 19.0;
 const GERMAN_VAT_REDUCED = 7.0;
+const DEFAULT_NIGHTLY_RATE = 99.0;
 
 $method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
 $uri = $_SERVER['REQUEST_URI'] ?? '/';
@@ -178,14 +179,28 @@ function handleRoomTypes(string $method, array $segments): void
         if (empty($data['name'])) {
             jsonResponse(['error' => 'Name is required.'], 422);
         }
+        if (!array_key_exists('max_occupancy', $data)) {
+            jsonResponse(['error' => 'Max occupancy is required.'], 422);
+        }
 
-        $stmt = $pdo->prepare('INSERT INTO room_types (name, description, base_occupancy, max_occupancy, base_rate, currency, created_at, updated_at) VALUES (:name, :description, :base_occupancy, :max_occupancy, :base_rate, :currency, :created_at, :updated_at)');
+        $baseOccupancy = isset($data['base_occupancy']) ? (int) $data['base_occupancy'] : 1;
+        $maxOccupancy = (int) $data['max_occupancy'];
+        if ($baseOccupancy <= 0) {
+            jsonResponse(['error' => 'Base occupancy must be greater than 0.'], 422);
+        }
+        if ($maxOccupancy <= 0) {
+            jsonResponse(['error' => 'Max occupancy must be greater than 0.'], 422);
+        }
+        if ($baseOccupancy > $maxOccupancy) {
+            jsonResponse(['error' => 'Base occupancy cannot exceed max occupancy.'], 422);
+        }
+
+        $stmt = $pdo->prepare('INSERT INTO room_types (name, description, base_occupancy, max_occupancy, currency, created_at, updated_at) VALUES (:name, :description, :base_occupancy, :max_occupancy, :currency, :created_at, :updated_at)');
         $stmt->execute([
             'name' => $data['name'],
             'description' => $data['description'] ?? null,
-            'base_occupancy' => $data['base_occupancy'] ?? 1,
-            'max_occupancy' => $data['max_occupancy'] ?? ($data['base_occupancy'] ?? 1),
-            'base_rate' => $data['base_rate'] ?? null,
+            'base_occupancy' => $baseOccupancy,
+            'max_occupancy' => $maxOccupancy,
             'currency' => $data['currency'] ?? 'EUR',
             'created_at' => now(),
             'updated_at' => now(),
@@ -196,14 +211,47 @@ function handleRoomTypes(string $method, array $segments): void
 
     if (($method === 'PUT' || $method === 'PATCH') && $id !== null) {
         $data = parseJsonBody();
-        $fields = ['name', 'description', 'base_occupancy', 'max_occupancy', 'base_rate', 'currency'];
+
+        $stmt = $pdo->prepare('SELECT base_occupancy, max_occupancy FROM room_types WHERE id = :id');
+        $stmt->execute(['id' => $id]);
+        $current = $stmt->fetch();
+        if (!$current) {
+            jsonResponse(['error' => 'Room type not found.'], 404);
+        }
+
+        $fields = ['name', 'description', 'base_occupancy', 'max_occupancy', 'currency'];
         $updates = [];
         $params = ['id' => $id];
+        $baseOccupancy = (int) ($current['base_occupancy'] ?? 1);
+        $maxOccupancy = (int) ($current['max_occupancy'] ?? 1);
         foreach ($fields as $field) {
-            if (array_key_exists($field, $data)) {
-                $updates[] = sprintf('%s = :%s', $field, $field);
+            if (!array_key_exists($field, $data)) {
+                continue;
+            }
+
+            if ($field === 'base_occupancy' || $field === 'max_occupancy') {
+                if ($data[$field] === null || $data[$field] === '') {
+                    jsonResponse(['error' => sprintf('%s is required.', ucfirst(str_replace('_', ' ', $field)))], 422);
+                }
+                $value = (int) $data[$field];
+                if ($value <= 0) {
+                    jsonResponse(['error' => sprintf('%s must be greater than 0.', ucfirst(str_replace('_', ' ', $field)))], 422);
+                }
+                if ($field === 'base_occupancy') {
+                    $baseOccupancy = $value;
+                }
+                if ($field === 'max_occupancy') {
+                    $maxOccupancy = $value;
+                }
+                $params[$field] = $value;
+            } else {
                 $params[$field] = $data[$field];
             }
+            $updates[] = sprintf('%s = :%s', $field, $field);
+        }
+
+        if ($baseOccupancy > $maxOccupancy) {
+            jsonResponse(['error' => 'Base occupancy cannot exceed max occupancy.'], 422);
         }
 
         if (!$updates) {
@@ -1560,7 +1608,7 @@ function isRoomAvailable(PDO $pdo, int $roomId, string $checkIn, string $checkOu
 function fetchReservationRooms(int $reservationId): array
 {
     $pdo = db();
-    $sql = 'SELECT rr.*, rooms.room_number, rooms.room_type_id, rt.name AS room_type_name, rt.base_rate AS room_type_base_rate'
+    $sql = 'SELECT rr.*, rooms.room_number, rooms.room_type_id, rt.name AS room_type_name, rt.base_occupancy AS room_type_base_occupancy, rt.max_occupancy AS room_type_max_occupancy'
         . ' FROM reservation_rooms rr'
         . ' JOIN rooms ON rooms.id = rr.room_id'
         . ' LEFT JOIN room_types rt ON rt.id = rooms.room_type_id'
@@ -2191,13 +2239,14 @@ function determineNightlyRate(array $room, array $reservation, int $nights): flo
     if ($nightlyRate <= 0 && isset($reservation['rate_plan_base_price'])) {
         $nightlyRate = (float) $reservation['rate_plan_base_price'];
     }
-    if ($nightlyRate <= 0 && isset($room['room_type_base_rate'])) {
-        $nightlyRate = (float) $room['room_type_base_rate'];
-    }
     if ($nightlyRate <= 0 && isset($reservation['total_amount'])) {
         $roomCount = max(1, count($reservation['rooms'] ?? []));
         $nightCount = max(1, $nights);
         $nightlyRate = ((float) $reservation['total_amount']) / ($roomCount * $nightCount);
+    }
+
+    if ($nightlyRate <= 0) {
+        $nightlyRate = DEFAULT_NIGHTLY_RATE;
     }
 
     return max(0.0, $nightlyRate);
