@@ -46,6 +46,8 @@ const state = {
     calendarColors: { ...CALENDAR_COLOR_DEFAULTS },
     calendarColorTokens: {},
     calendarColorsLoaded: false,
+    calendarCategorySort: 'name_asc',
+    collapsedCategories: new Set(),
     invoiceLogoDataUrl: null,
     currentReservationInvoices: [],
     guestLookupResults: [],
@@ -55,11 +57,17 @@ const state = {
 
 const CALENDAR_DAYS = 14;
 const CALENDAR_LABEL_KEY = 'realpms_calendar_label_mode';
+const CALENDAR_CATEGORY_SORT_KEY = 'realpms_calendar_category_sort';
 
 try {
     const storedMode = localStorage.getItem(CALENDAR_LABEL_KEY);
     if (storedMode === 'company' || storedMode === 'guest') {
         state.calendarLabelMode = storedMode;
+    }
+    const storedSort = localStorage.getItem(CALENDAR_CATEGORY_SORT_KEY);
+    const allowedSorts = new Set(['name_asc', 'name_desc', 'room_count_asc', 'room_count_desc']);
+    if (storedSort && allowedSorts.has(storedSort)) {
+        state.calendarCategorySort = storedSort;
     }
 } catch (error) {
     // ignore storage access issues
@@ -69,6 +77,7 @@ const notificationEl = document.getElementById('notification');
 const tokenInput = document.getElementById('api-token');
 const dashboardDateInput = document.getElementById('dashboard-date');
 const calendarLabelSelect = document.getElementById('calendar-label-mode');
+const calendarCategorySortSelect = document.getElementById('calendar-category-sort');
 const calendarSettingsButton = document.getElementById('open-calendar-settings');
 const reportStartInput = document.getElementById('report-start');
 const reportEndInput = document.getElementById('report-end');
@@ -360,6 +369,26 @@ if (occupancyCalendarContainer) {
     occupancyCalendarContainer.addEventListener('click', (event) => {
         const target = event.target;
         if (!(target instanceof Element)) {
+            return;
+        }
+        const categoryToggle = target.closest('.category-toggle');
+        if (categoryToggle) {
+            const categoryId = categoryToggle.dataset.categoryId;
+            if (categoryId) {
+                if (state.collapsedCategories.has(categoryId)) {
+                    state.collapsedCategories.delete(categoryId);
+                } else {
+                    state.collapsedCategories.add(categoryId);
+                }
+                renderOccupancyCalendar(
+                    state.rooms,
+                    state.reservations,
+                    dashboardDateInput && dashboardDateInput.value ? dashboardDateInput.value : toLocalISODate(),
+                    CALENDAR_DAYS,
+                    state.calendarLabelMode,
+                    state.calendarCategorySort,
+                );
+            }
             return;
         }
         const entry = target.closest('.calendar-entry');
@@ -1579,7 +1608,7 @@ function startCompanyEdit(companyId) {
     }
 }
 
-function renderOccupancyCalendar(rooms, reservations, startDateStr, days = CALENDAR_DAYS, labelMode = state.calendarLabelMode || 'guest') {
+function renderOccupancyCalendar(rooms, reservations, startDateStr, days = CALENDAR_DAYS, labelMode = state.calendarLabelMode || 'guest', categorySort = state.calendarCategorySort || 'name_asc') {
     const container = document.getElementById('occupancy-calendar');
     if (!container) {
         return;
@@ -1699,7 +1728,7 @@ function renderOccupancyCalendar(rooms, reservations, startDateStr, days = CALEN
     const headerRow = document.createElement('tr');
     const roomHeader = document.createElement('th');
     roomHeader.className = 'room';
-    roomHeader.textContent = 'Zimmer';
+    roomHeader.textContent = 'Kategorie / Zimmer';
     headerRow.appendChild(roomHeader);
 
     const headerFormatter = new Intl.DateTimeFormat('de-DE', { weekday: 'short', day: '2-digit', month: '2-digit' });
@@ -1723,31 +1752,105 @@ function renderOccupancyCalendar(rooms, reservations, startDateStr, days = CALEN
     table.appendChild(thead);
 
     const tbody = document.createElement('tbody');
-    const sortedRooms = [...rooms].sort((a, b) => {
-        const typeCompare = (a.room_type_name || '').localeCompare(b.room_type_name || '', 'de', { sensitivity: 'base' });
+    const sortRooms = (a, b) => {
+        const aType = a.room_type_name || '';
+        const bType = b.room_type_name || '';
+        const typeCompare = aType.localeCompare(bType, 'de', { sensitivity: 'base' });
         if (typeCompare !== 0) {
             return typeCompare;
         }
         const aValue = (a.room_number ?? a.name ?? '').toString();
         const bValue = (b.room_number ?? b.name ?? '').toString();
         return aValue.localeCompare(bValue, 'de', { numeric: true, sensitivity: 'base' });
+    };
+
+    const roomsByCategory = new Map();
+    const sortedRooms = [...rooms].sort(sortRooms);
+    sortedRooms.forEach((room) => {
+        const typeIdRaw = Number(room.room_type_id);
+        const hasType = Number.isFinite(typeIdRaw) && typeIdRaw > 0;
+        const typeId = hasType ? typeIdRaw : null;
+        const categoryKey = hasType ? `type-${typeId}` : 'uncategorized';
+        const typeName = hasType
+            ? getRoomTypeById(typeId)?.name || room.room_type_name || `Kategorie ${typeId}`
+            : room.room_type_name || 'Ohne Kategorie';
+        if (!roomsByCategory.has(categoryKey)) {
+            roomsByCategory.set(categoryKey, {
+                key: categoryKey,
+                typeId,
+                name: typeName,
+                rooms: [],
+                overbookingRow: null,
+            });
+        }
+        roomsByCategory.get(categoryKey).rooms.push(room);
     });
 
-    const calendarRows = sortedRooms.map((room) => {
-        const roomId = room.id ?? room.room_id;
-        return {
-            calendar_id: `room-${roomId}`,
-            label: room.room_type_name ? `${room.room_number || room.name || `Zimmer ${roomId}`} (${room.room_type_name})` : (room.room_number || room.name || `Zimmer ${roomId}`),
-            isOverbooking: false,
-        };
+    overbookingRows.forEach((rowInfo) => {
+        const typeId = Number(rowInfo.room_type_id);
+        const hasType = Number.isFinite(typeId) && typeId > 0;
+        const categoryKey = hasType ? `type-${typeId}` : rowInfo.calendar_id;
+        if (!roomsByCategory.has(categoryKey)) {
+            roomsByCategory.set(categoryKey, {
+                key: categoryKey,
+                typeId: hasType ? typeId : null,
+                name: rowInfo.room_type_name || (hasType ? `Kategorie ${typeId}` : 'Überbuchung'),
+                rooms: [],
+                overbookingRow: rowInfo,
+            });
+        } else {
+            roomsByCategory.get(categoryKey).overbookingRow = rowInfo;
+        }
     });
 
-    const overbookingRowList = Array.from(overbookingRows.values()).sort((a, b) => (a.room_type_name || '').localeCompare(b.room_type_name || '', 'de', { sensitivity: 'base' }));
+    const categories = Array.from(roomsByCategory.values());
+    categories.forEach((category) => {
+        category.rooms.sort((a, b) => {
+            const aValue = (a.room_number ?? a.name ?? '').toString();
+            const bValue = (b.room_number ?? b.name ?? '').toString();
+            return aValue.localeCompare(bValue, 'de', { numeric: true, sensitivity: 'base' });
+        });
+    });
 
-    [...calendarRows, ...overbookingRowList].forEach((rowInfo) => {
+    const normalizedSort = ['name_asc', 'name_desc', 'room_count_asc', 'room_count_desc'].includes(categorySort)
+        ? categorySort
+        : 'name_asc';
+
+    state.calendarCategorySort = normalizedSort;
+
+    categories.sort((a, b) => {
+        if (normalizedSort === 'room_count_asc' || normalizedSort === 'room_count_desc') {
+            const multiplier = normalizedSort === 'room_count_desc' ? -1 : 1;
+            const diff = (a.rooms.length - b.rooms.length) * multiplier;
+            if (diff !== 0) {
+                return diff;
+            }
+            return (a.name || '').localeCompare(b.name || '', 'de', { sensitivity: 'base' });
+        }
+        const direction = normalizedSort === 'name_desc' ? -1 : 1;
+        const comparison = (a.name || '').localeCompare(b.name || '', 'de', { sensitivity: 'base' });
+        if (comparison !== 0) {
+            return comparison * direction;
+        }
+        return (a.rooms.length - b.rooms.length) * (direction === 1 ? 1 : -1);
+    });
+
+    const existingCategoryKeys = new Set(categories.map((category) => category.key));
+    Array.from(state.collapsedCategories).forEach((categoryKey) => {
+        if (!existingCategoryKeys.has(categoryKey)) {
+            state.collapsedCategories.delete(categoryKey);
+        }
+    });
+
+    const appendRow = (rowInfo, categoryKey, collapsed) => {
         const row = document.createElement('tr');
+        row.dataset.categoryId = categoryKey;
+        row.classList.add('category-child');
         if (rowInfo.isOverbooking) {
             row.classList.add('overbooking-row');
+        }
+        if (collapsed) {
+            row.classList.add('is-hidden');
         }
         const roomCell = document.createElement('th');
         roomCell.scope = 'row';
@@ -1828,6 +1931,114 @@ function renderOccupancyCalendar(rooms, reservations, startDateStr, days = CALEN
         });
 
         tbody.appendChild(row);
+    };
+
+    categories.forEach((category) => {
+        const isCollapsed = state.collapsedCategories.has(category.key);
+        const categoryRow = document.createElement('tr');
+        categoryRow.classList.add('category-row');
+        if (isCollapsed) {
+            categoryRow.classList.add('collapsed');
+        }
+        categoryRow.dataset.categoryId = category.key;
+
+        const categoryCell = document.createElement('th');
+        categoryCell.scope = 'row';
+        categoryCell.className = 'room';
+        const toggleButton = document.createElement('button');
+        toggleButton.type = 'button';
+        toggleButton.className = 'category-toggle';
+        toggleButton.dataset.categoryId = category.key;
+        toggleButton.setAttribute('aria-expanded', String(!isCollapsed));
+        const roomCountLabel = category.rooms.length > 0 ? ` (${category.rooms.length} Zimmer)` : '';
+        toggleButton.textContent = `${category.name}${roomCountLabel}`;
+        toggleButton.title = isCollapsed ? 'Kategorie anzeigen' : 'Kategorie ausblenden';
+        categoryCell.appendChild(toggleButton);
+        categoryRow.appendChild(categoryCell);
+
+        dayDates.forEach((date) => {
+            const summaryCell = document.createElement('td');
+            summaryCell.classList.add('category-summary');
+            const currentKey = dateKey(date);
+            summaryCell.dataset.date = currentKey;
+            if (currentKey === todayKey) {
+                summaryCell.classList.add('today');
+            }
+            if (isWeekend(date)) {
+                summaryCell.classList.add('weekend');
+            }
+
+            const totalRooms = category.rooms.length;
+            let occupiedRooms = 0;
+            category.rooms.forEach((room) => {
+                const roomId = room.id ?? room.room_id;
+                if (!roomId) {
+                    return;
+                }
+                const mapKey = `room-${roomId}_${currentKey}`;
+                const entries = occupancyMap.get(mapKey) || [];
+                if (entries.length > 0) {
+                    occupiedRooms += 1;
+                }
+            });
+
+            let overbookingCount = 0;
+            if (category.overbookingRow) {
+                const overKey = `${category.overbookingRow.calendar_id}_${currentKey}`;
+                const overEntries = occupancyMap.get(overKey) || [];
+                overbookingCount = overEntries.reduce((sum, entry) => sum + (Number(entry.quantity) || 0), 0);
+            }
+
+            let summaryText = '—';
+            if (totalRooms > 0) {
+                summaryText = `${occupiedRooms}/${totalRooms}`;
+                if (occupiedRooms === 0) {
+                    summaryCell.classList.add('category-empty');
+                } else if (occupiedRooms >= totalRooms) {
+                    summaryCell.classList.add('category-full');
+                } else {
+                    summaryCell.classList.add('category-partial');
+                }
+                const detailParts = [`${occupiedRooms} von ${totalRooms} Zimmern belegt`];
+                if (overbookingCount > 0) {
+                    detailParts.push(`Überbuchung: ${overbookingCount}`);
+                }
+                summaryCell.title = detailParts.join('\n');
+            }
+
+            if (overbookingCount > 0) {
+                summaryText = totalRooms > 0 ? `${summaryText} (+${overbookingCount})` : `+${overbookingCount}`;
+                summaryCell.classList.add('category-overbooking', 'has-overbooking');
+                if (!summaryCell.title) {
+                    summaryCell.title = `Überbuchung: ${overbookingCount}`;
+                }
+            }
+
+            summaryCell.textContent = summaryText;
+            categoryRow.appendChild(summaryCell);
+        });
+
+        tbody.appendChild(categoryRow);
+
+        category.rooms.forEach((room) => {
+            const roomId = room.id ?? room.room_id;
+            if (!roomId) {
+                return;
+            }
+            const baseLabel = room.room_number || room.name || `Zimmer ${roomId}`;
+            const label = room.room_type_name && room.room_type_name !== category.name
+                ? `${baseLabel} (${room.room_type_name})`
+                : baseLabel;
+            appendRow({
+                calendar_id: `room-${roomId}`,
+                label,
+                isOverbooking: false,
+            }, category.key, isCollapsed);
+        });
+
+        if (category.overbookingRow) {
+            appendRow(category.overbookingRow, category.key, isCollapsed);
+        }
     });
 
     table.appendChild(tbody);
@@ -2073,7 +2284,7 @@ async function loadDashboard(force = false) {
             { key: 'occupancy_rate', label: 'Auslastung', render: (row) => `${row.occupancy_rate}%` },
         ], Array.isArray(occupancy) ? occupancy : []);
 
-        renderOccupancyCalendar(rooms, reservations, targetDateValue, CALENDAR_DAYS, state.calendarLabelMode);
+        renderOccupancyCalendar(rooms, reservations, targetDateValue, CALENDAR_DAYS, state.calendarLabelMode, state.calendarCategorySort);
         state.loadedSections.add('dashboard');
     } catch (error) {
         showMessage(error.message, 'error');
@@ -3270,6 +3481,30 @@ if (calendarLabelSelect) {
             dashboardDateInput && dashboardDateInput.value ? dashboardDateInput.value : toLocalISODate(),
             CALENDAR_DAYS,
             nextMode,
+            state.calendarCategorySort,
+        );
+    });
+}
+
+if (calendarCategorySortSelect) {
+    calendarCategorySortSelect.value = state.calendarCategorySort;
+    calendarCategorySortSelect.addEventListener('change', () => {
+        const allowedSorts = ['name_asc', 'name_desc', 'room_count_asc', 'room_count_desc'];
+        const selected = calendarCategorySortSelect.value;
+        const nextSort = allowedSorts.includes(selected) ? selected : 'name_asc';
+        state.calendarCategorySort = nextSort;
+        try {
+            localStorage.setItem(CALENDAR_CATEGORY_SORT_KEY, nextSort);
+        } catch (error) {
+            // ignore storage failures
+        }
+        renderOccupancyCalendar(
+            state.rooms,
+            state.reservations,
+            dashboardDateInput && dashboardDateInput.value ? dashboardDateInput.value : toLocalISODate(),
+            CALENDAR_DAYS,
+            state.calendarLabelMode,
+            nextSort,
         );
     });
 }

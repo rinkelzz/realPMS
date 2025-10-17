@@ -480,6 +480,99 @@ button.status-action:disabled:hover {
     font-weight: 600;
 }
 
+.calendar-table tr.category-row th.room {
+    background: rgba(37, 99, 235, 0.08);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    font-size: .75rem;
+    color: var(--primary);
+    position: sticky;
+    left: 0;
+    z-index: 4;
+}
+
+.calendar-table tr.category-row {
+    background: rgba(37, 99, 235, 0.04);
+}
+
+.calendar-table tr.category-row.collapsed {
+    opacity: 0.85;
+}
+
+.category-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: .35rem;
+    font: inherit;
+    color: inherit;
+    background: transparent;
+    border: none;
+    padding: 0;
+    cursor: pointer;
+}
+
+.category-toggle:focus-visible {
+    outline: 2px solid var(--primary);
+    outline-offset: 2px;
+}
+
+.category-toggle::before {
+    content: "";
+    width: .55rem;
+    height: .55rem;
+    border-right: 2px solid currentColor;
+    border-bottom: 2px solid currentColor;
+    transform: rotate(45deg);
+    transition: transform .2s ease-in-out;
+    margin-right: .15rem;
+}
+
+.calendar-table tr.category-row.collapsed .category-toggle::before {
+    transform: rotate(-45deg);
+}
+
+.category-summary {
+    font-weight: 600;
+    background: rgba(37, 99, 235, 0.04);
+    color: var(--muted);
+}
+
+.category-summary.category-empty {
+    color: var(--muted);
+}
+
+.category-summary.category-partial {
+    color: var(--primary);
+    background: rgba(37, 99, 235, 0.08);
+}
+
+.category-summary.category-full {
+    color: var(--calendar-color-checked_in);
+    background: rgba(22, 163, 74, 0.12);
+}
+
+.category-summary.category-overbooking {
+    color: var(--calendar-color-cancelled);
+    background: rgba(239, 68, 68, 0.12);
+}
+
+.category-summary.has-overbooking {
+    box-shadow: inset 0 0 0 2px rgba(239, 68, 68, 0.25);
+}
+
+.calendar-table tr.category-child.is-hidden {
+    display: none;
+}
+
+.calendar-table tr.category-child th.room {
+    padding-left: 1.4rem;
+}
+
+.calendar-table tr.category-child.overbooking-row th.room {
+    padding-left: 1.4rem;
+    background: rgba(239, 68, 68, 0.08);
+}
+
 .calendar-table th.today,
 .calendar-table td.today {
     box-shadow: inset 0 0 0 2px rgba(37, 99, 235, 0.35);
