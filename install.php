@@ -100,6 +100,17 @@ try {
 }
 
 try {
+    if (!columnExists($pdo, 'room_types', 'base_rate')) {
+        $pdo->exec("ALTER TABLE room_types ADD COLUMN base_rate DECIMAL(10,2) NOT NULL DEFAULT 0 AFTER description");
+        $results[] = '✓ Added column `base_rate` to `room_types`';
+    } else {
+        $results[] = '• Column `base_rate` already present on `room_types`';
+    }
+} catch (PDOException $exception) {
+    respond('Error ensuring room type base rate column: ' . $exception->getMessage(), true, $results);
+}
+
+try {
     if (!columnExists($pdo, 'invoices', 'correction_number')) {
         $pdo->exec("ALTER TABLE invoices ADD COLUMN correction_number VARCHAR(100) NULL UNIQUE AFTER invoice_number");
         $results[] = '✓ Added column `correction_number` to `invoices`';
@@ -367,6 +378,7 @@ function getSchemaStatements(): array
                 id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
                 name VARCHAR(100) NOT NULL,
                 description TEXT NULL,
+                base_rate DECIMAL(10,2) NOT NULL DEFAULT 0,
                 base_occupancy TINYINT UNSIGNED NOT NULL DEFAULT 1,
                 max_occupancy TINYINT UNSIGNED NOT NULL DEFAULT 1,
                 currency CHAR(3) NULL,
@@ -610,11 +622,6 @@ function getSchemaStatements(): array
 function respond(string $message, bool $isError = false, array $log = []): void
 {
     $status = $isError ? 'error' : 'success';
-    $payload = [
-        'status' => $status,
-        'message' => $message,
-        'steps' => $log,
-    ];
 
     if (PHP_SAPI === 'cli') {
         foreach ($log as $line) {
@@ -624,8 +631,63 @@ function respond(string $message, bool $isError = false, array $log = []): void
         exit($isError ? 1 : 0);
     }
 
-    header('Content-Type: application/json');
+    header('Content-Type: text/html; charset=utf-8');
     http_response_code($isError ? 500 : 200);
-    echo json_encode($payload, JSON_PRETTY_PRINT);
+
+    $title = $isError ? 'Installation fehlgeschlagen' : 'Installation erfolgreich';
+    $statusLabel = $isError ? 'Fehler' : 'Erfolg';
+    $escapedMessage = htmlspecialchars($message, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+    $generatedAt = date('d.m.Y H:i');
+
+    $logItems = '';
+    if (!empty($log)) {
+        $logItems .= '<ul class="steps">';
+        foreach ($log as $line) {
+            $logItems .= sprintf(
+                '<li>%s</li>',
+                htmlspecialchars($line, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8')
+            );
+        }
+        $logItems .= '</ul>';
+    } else {
+        $logItems = '<p class="no-steps">Es wurden keine weiteren Schritte protokolliert.</p>';
+    }
+
+    $html = <<<HTML
+<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="utf-8">
+    <title>{$title}</title>
+    <style>
+        body { font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #f3f4f6; margin: 0; padding: 0; color: #111827; }
+        main { max-width: 680px; margin: 48px auto; background: #ffffff; padding: 32px; border-radius: 12px; box-shadow: 0 10px 25px rgba(15, 23, 42, 0.08); }
+        h1 { margin-top: 0; font-size: 1.75rem; }
+        .status { display: inline-block; padding: 6px 14px; border-radius: 9999px; font-size: 0.875rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 16px; }
+        .status.success { background: #dcfce7; color: #166534; }
+        .status.error { background: #fee2e2; color: #b91c1c; }
+        .message { font-size: 1rem; margin-bottom: 24px; }
+        .steps { list-style: none; padding-left: 0; margin: 0; }
+        .steps li { padding: 10px 12px; border: 1px solid #e5e7eb; border-radius: 8px; margin-bottom: 8px; background: #f9fafb; }
+        .steps li:last-child { margin-bottom: 0; }
+        .no-steps { margin: 0; color: #6b7280; }
+        footer { margin-top: 32px; font-size: 0.85rem; color: #6b7280; }
+    </style>
+</head>
+<body>
+    <main>
+        <span class="status {$status}">{$statusLabel}</span>
+        <h1>{$title}</h1>
+        <p class="message">{$escapedMessage}</p>
+        {$logItems}
+        <footer>
+            realPMS Installationsskript &middot; Stand: {$generatedAt}
+        </footer>
+    </main>
+</body>
+</html>
+HTML;
+
+    echo $html;
     exit;
 }
