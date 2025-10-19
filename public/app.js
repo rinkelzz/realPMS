@@ -307,23 +307,28 @@ async function apiFetch(path, options = {}) {
     const { skipAuth = false } = options;
     const normalizedPath = path ? path.replace(/^\/+/, '') : '';
     const baseUrl = normalizedPath ? `${API_BASE}/${normalizedPath}` : API_BASE;
-    let url = baseUrl;
     const headers = new Headers(options.headers || {});
     if (!skipAuth) {
         if (!requireToken()) {
             throw new Error('Kein API-Token gesetzt.');
         }
         headers.set('X-API-Key', state.token);
-        if (state.token) {
-            const separator = baseUrl.includes('?') ? '&' : '?';
-            url = `${baseUrl}${separator}token=${encodeURIComponent(state.token)}`;
-        }
     }
     if (options.body && !headers.has('Content-Type')) {
         headers.set('Content-Type', 'application/json');
     }
 
-    const response = await fetch(url, { ...options, headers });
+    let response = await fetch(baseUrl, { ...options, headers });
+
+    if (
+        response.status === 401 &&
+        !skipAuth &&
+        state.token
+    ) {
+        const separator = baseUrl.includes('?') ? '&' : '?';
+        const fallbackUrl = `${baseUrl}${separator}token=${encodeURIComponent(state.token)}`;
+        response = await fetch(fallbackUrl, { ...options, headers });
+    }
     if (!response.ok) {
         let message = `${response.status} ${response.statusText}`;
         try {
