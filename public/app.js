@@ -306,7 +306,7 @@ function getReservationCalendarLabel(reservation, labelMode = 'guest') {
 async function apiFetch(path, options = {}) {
     const { skipAuth = false } = options;
     const normalizedPath = path ? path.replace(/^\/+/, '') : '';
-    const url = normalizedPath ? `${API_BASE}/${normalizedPath}` : API_BASE;
+    const baseUrl = normalizedPath ? `${API_BASE}/${normalizedPath}` : API_BASE;
     const headers = new Headers(options.headers || {});
     if (!skipAuth) {
         if (!requireToken()) {
@@ -318,7 +318,17 @@ async function apiFetch(path, options = {}) {
         headers.set('Content-Type', 'application/json');
     }
 
-    const response = await fetch(url, { ...options, headers });
+    let response = await fetch(baseUrl, { ...options, headers });
+
+    if (
+        response.status === 401 &&
+        !skipAuth &&
+        state.token
+    ) {
+        const separator = baseUrl.includes('?') ? '&' : '?';
+        const fallbackUrl = `${baseUrl}${separator}token=${encodeURIComponent(state.token)}`;
+        response = await fetch(fallbackUrl, { ...options, headers });
+    }
     if (!response.ok) {
         let message = `${response.status} ${response.statusText}`;
         try {
