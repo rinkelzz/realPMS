@@ -262,6 +262,11 @@ function validateDateTime(string $value): bool
 function initializeCsrfSession(): void
 {
     if (session_status() === PHP_SESSION_NONE) {
+        if (headers_sent()) {
+            error_log('[realPMS CSRF] Cannot initialize session - headers already sent. CSRF protection will not be available.');
+            return;
+        }
+        
         $sessionOptions = [
             'cookie_httponly' => true,
             'cookie_samesite' => 'Strict',
@@ -270,9 +275,7 @@ function initializeCsrfSession(): void
             $sessionOptions['cookie_secure'] = true;
         }
         
-        if (!headers_sent()) {
-            session_start($sessionOptions);
-        }
+        session_start($sessionOptions);
     }
 }
 
@@ -312,10 +315,18 @@ function validateCsrfToken(): void
     }
     
     initializeCsrfSession();
+    
+    // Check if session is active
+    if (session_status() !== PHP_SESSION_ACTIVE) {
+        error_log('[realPMS CSRF] Session not active - CSRF protection unavailable');
+        jsonResponse(['error' => 'CSRF protection unavailable. Session could not be initialized.'], 500);
+    }
+    
     $expectedToken = getCsrfToken();
     
     if ($expectedToken === null || $expectedToken === '') {
-        jsonResponse(['error' => 'CSRF token not initialized. Please refresh the page.'], 403);
+        error_log('[realPMS CSRF] CSRF token not found in session');
+        jsonResponse(['error' => 'CSRF token not initialized. Session may have expired or been cleared.'], 403);
     }
     
     // Check for token in header first
@@ -341,6 +352,7 @@ function validateCsrfToken(): void
     }
     
     if ($providedToken === null || !hash_equals($expectedToken, (string) $providedToken)) {
+        error_log('[realPMS CSRF] Token validation failed');
         jsonResponse(['error' => 'CSRF token validation failed. Please refresh the page and try again.'], 403);
     }
 }

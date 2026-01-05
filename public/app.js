@@ -318,8 +318,27 @@ async function apiFetch(path, options = {}) {
     
     // Add CSRF token for state-changing requests
     const method = (options.method || 'GET').toUpperCase();
-    if (['POST', 'PUT', 'PATCH', 'DELETE'].includes(method) && state.csrfToken) {
-        headers.set('X-CSRF-Token', state.csrfToken);
+    if (['POST', 'PUT', 'PATCH', 'DELETE'].includes(method)) {
+        if (!state.csrfToken) {
+            // CSRF token not yet available, try to fetch it first
+            console.warn('[realPMS] CSRF token not available, fetching...');
+            try {
+                const tempResponse = await fetch(API_BASE, {
+                    headers: { 'X-API-Key': state.token }
+                });
+                const csrfToken = tempResponse.headers.get('X-CSRF-Token');
+                if (csrfToken) {
+                    state.csrfToken = csrfToken;
+                    headers.set('X-CSRF-Token', csrfToken);
+                } else {
+                    throw new Error('CSRF-Token konnte nicht abgerufen werden.');
+                }
+            } catch (error) {
+                throw new Error('CSRF-Token ist nicht verfügbar. Bitte laden Sie die Seite neu.');
+            }
+        } else {
+            headers.set('X-CSRF-Token', state.csrfToken);
+        }
     }
     
     if (options.body && !headers.has('Content-Type')) {
