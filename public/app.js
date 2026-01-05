@@ -27,6 +27,7 @@ const RESERVATION_STATUS_ACTIONS = [
 
 const state = {
     token: null,
+    csrfToken: null,
     roomTypes: [],
     ratePlans: [],
     rooms: [],
@@ -314,6 +315,13 @@ async function apiFetch(path, options = {}) {
         }
         headers.set('X-API-Key', state.token);
     }
+    
+    // Add CSRF token for state-changing requests
+    const method = (options.method || 'GET').toUpperCase();
+    if (['POST', 'PUT', 'PATCH', 'DELETE'].includes(method) && state.csrfToken) {
+        headers.set('X-CSRF-Token', state.csrfToken);
+    }
+    
     if (options.body && !headers.has('Content-Type')) {
         headers.set('Content-Type', 'application/json');
     }
@@ -329,6 +337,13 @@ async function apiFetch(path, options = {}) {
         const fallbackUrl = `${baseUrl}${separator}token=${encodeURIComponent(state.token)}`;
         response = await fetch(fallbackUrl, { ...options, headers });
     }
+    
+    // Update CSRF token from response header if present
+    const csrfTokenHeader = response.headers.get('X-CSRF-Token');
+    if (csrfTokenHeader) {
+        state.csrfToken = csrfTokenHeader;
+    }
+    
     if (!response.ok) {
         let message = `${response.status} ${response.statusText}`;
         try {
@@ -357,6 +372,7 @@ function setToken(token) {
         bootstrap();
     } else {
         localStorage.removeItem('realpms_api_token');
+        state.csrfToken = null;
         state.roomTypes = [];
         state.ratePlans = [];
         state.rooms = [];
@@ -2277,6 +2293,12 @@ async function bootstrap() {
         return;
     }
     try {
+        // Fetch CSRF token first by calling the root API endpoint
+        const apiInfo = await apiFetch('');
+        if (apiInfo && apiInfo.csrf_token) {
+            state.csrfToken = apiInfo.csrf_token;
+        }
+        
         const [roomTypes, ratePlans, rooms, roles, guests, companies, articles, logoResponse] = await Promise.all([
             apiFetch('room-types'),
             apiFetch('rate-plans'),

@@ -188,6 +188,15 @@ function jsonResponse($payload, int $status = 200): void
 
     http_response_code($status);
     header('Content-Type: application/json');
+    
+    // Include CSRF token in response header for authenticated requests
+    if (session_status() === PHP_SESSION_ACTIVE) {
+        $csrfToken = getCsrfToken();
+        if ($csrfToken !== null) {
+            header('X-CSRF-Token: ' . $csrfToken);
+        }
+    }
+    
     echo json_encode($payload, JSON_PRETTY_PRINT);
     exit;
 }
@@ -227,6 +236,9 @@ function requireApiKey(): void
     if ($provided === null || !hash_equals($expected, (string) $provided)) {
         jsonResponse(['error' => 'Unauthorized.'], 401);
     }
+    
+    // Initialize CSRF session after successful authentication
+    generateCsrfToken();
 }
 
 function now(): string
@@ -242,4 +254,91 @@ function validateDate(string $value): bool
 function validateDateTime(string $value): bool
 {
     return (bool) DateTimeImmutable::createFromFormat('Y-m-d H:i:s', $value);
+}
+
+/**
+ * Initialize session for CSRF token storage.
+ */
+function initializeCsrfSession(): void
+{
+    if (session_status() === PHP_SESSION_NONE) {
+        $sessionOptions = [
+            'cookie_httponly' => true,
+            'cookie_samesite' => 'Strict',
+        ];
+        if (isset($_SERVER['HTTPS']) && $_SERVER['HTTPS'] === 'on') {
+            $sessionOptions['cookie_secure'] = true;
+        }
+        session_start($sessionOptions);
+    }
+}
+
+/**
+ * Generate a new CSRF token and store it in the session.
+ */
+function generateCsrfToken(): string
+{
+    initializeCsrfSession();
+    
+    if (!isset($_SESSION['csrf_token']) || !is_string($_SESSION['csrf_token']) || $_SESSION['csrf_token'] === '') {
+        $_SESSION['csrf_token'] = bin2hex(random_bytes(32));
+    }
+    
+    return $_SESSION['csrf_token'];
+}
+
+/**
+ * Get the current CSRF token from the session.
+ */
+function getCsrfToken(): ?string
+{
+    initializeCsrfSession();
+    return $_SESSION['csrf_token'] ?? null;
+}
+
+/**
+ * Validate CSRF token for state-changing requests.
+ */
+function validateCsrfToken(): void
+{
+    $method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
+    
+    // Only validate for state-changing methods
+    if (!in_array($method, ['POST', 'PUT', 'PATCH', 'DELETE'], true)) {
+        return;
+    }
+    
+    initializeCsrfSession();
+    $expectedToken = getCsrfToken();
+    
+    if ($expectedToken === null || $expectedToken === '') {
+        jsonResponse(['error' => 'CSRF token not initialized. Please refresh the page.'], 403);
+    }
+    
+    // Check for token in header first, then in body
+    $providedToken = null;
+    $headerSource = function_exists('getallheaders') ? getallheaders() : [];
+    $headers = array_change_key_case($headerSource ?: []);
+    
+    if (isset($headers['x-csrf-token'])) {
+        $providedToken = $headers['x-csrf-token'];
+    } else {
+        // Check in request body for JSON requests
+        $rawBody = file_get_contents('php://input');
+        if ($rawBody !== false && $rawBody !== '') {
+            $data = json_decode($rawBody, true);
+            if (is_array($data) && isset($data['_csrf_token'])) {
+                $providedToken = $data['_csrf_token'];
+            }
+        }
+        
+        // Check in POST data for form submissions
+        if ($providedToken === null && isset($_POST['_csrf_token'])) {
+            $providedToken = $_POST['_csrf_token'];
+        }
+    }
+    
+    if ($providedToken === null || !hash_equals($expectedToken, (string) $providedToken)) {
+        jsonResponse(['error' => 'CSRF token validation failed. Please refresh the page and try again.'], 403);
+    }
 }
