@@ -2293,12 +2293,6 @@ async function bootstrap() {
         return;
     }
     try {
-        // Fetch CSRF token first by calling the root API endpoint
-        const apiInfo = await apiFetch('');
-        if (apiInfo && apiInfo.csrf_token) {
-            state.csrfToken = apiInfo.csrf_token;
-        }
-        
         const [roomTypes, ratePlans, rooms, roles, guests, companies, articles, logoResponse] = await Promise.all([
             apiFetch('room-types'),
             apiFetch('rate-plans'),

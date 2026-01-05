@@ -269,7 +269,10 @@ function initializeCsrfSession(): void
         if (isset($_SERVER['HTTPS']) && $_SERVER['HTTPS'] === 'on') {
             $sessionOptions['cookie_secure'] = true;
         }
-        session_start($sessionOptions);
+        
+        if (!headers_sent()) {
+            session_start($sessionOptions);
+        }
     }
 }
 
@@ -315,27 +318,26 @@ function validateCsrfToken(): void
         jsonResponse(['error' => 'CSRF token not initialized. Please refresh the page.'], 403);
     }
     
-    // Check for token in header first, then in body
+    // Check for token in header first
     $providedToken = null;
-    $headerSource = function_exists('getallheaders') ? getallheaders() : [];
-    $headers = array_change_key_case($headerSource ?: []);
     
-    if (isset($headers['x-csrf-token'])) {
-        $providedToken = $headers['x-csrf-token'];
+    // Get headers from $_SERVER if getallheaders() is not available
+    if (function_exists('getallheaders')) {
+        $headerSource = getallheaders();
+        $headers = array_change_key_case($headerSource ?: []);
+        if (isset($headers['x-csrf-token'])) {
+            $providedToken = $headers['x-csrf-token'];
+        }
     } else {
-        // Check in request body for JSON requests
-        $rawBody = file_get_contents('php://input');
-        if ($rawBody !== false && $rawBody !== '') {
-            $data = json_decode($rawBody, true);
-            if (is_array($data) && isset($data['_csrf_token'])) {
-                $providedToken = $data['_csrf_token'];
-            }
+        // Fallback for environments without getallheaders()
+        if (isset($_SERVER['HTTP_X_CSRF_TOKEN'])) {
+            $providedToken = $_SERVER['HTTP_X_CSRF_TOKEN'];
         }
-        
-        // Check in POST data for form submissions
-        if ($providedToken === null && isset($_POST['_csrf_token'])) {
-            $providedToken = $_POST['_csrf_token'];
-        }
+    }
+    
+    // If token not found in headers, check in POST data
+    if ($providedToken === null && isset($_POST['_csrf_token'])) {
+        $providedToken = $_POST['_csrf_token'];
     }
     
     if ($providedToken === null || !hash_equals($expectedToken, (string) $providedToken)) {
