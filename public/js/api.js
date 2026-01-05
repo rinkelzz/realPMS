@@ -7,13 +7,12 @@
 import { state, API_BASE } from './state.js';
 
 /**
- * Checks if API token is set and shows error if not
+ * Checks if API token is set and logs error if not
  * @returns {boolean} True if token is set, false otherwise
+ * @note In production, this should integrate with a UI notification system
  */
 export function requireToken() {
     if (!state.token) {
-        // Note: showMessage needs to be imported from ui.js when needed
-        // For now, we'll use console.error
         console.error('Bitte speichern Sie einen gültigen API-Token, um Daten laden zu können.');
         return false;
     }

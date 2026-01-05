@@ -102,7 +102,8 @@ try {
         state.calendarCategorySort = storedSort;
     }
 } catch (error) {
-    // ignore storage access issues
+    // Ignore localStorage access issues (e.g., private browsing mode, storage quota exceeded).
+    // The application will use default values instead.
 }
 
 /**

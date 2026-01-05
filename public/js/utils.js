@@ -162,6 +162,9 @@ export function toSqlDateTime(value) {
     return value;
 }
 
+// Milliseconds per day constant for date calculations
+const MS_PER_DAY = 86400000;
+
 /**
  * Calculates the number of nights between two dates
  * @param {string} checkInValue - Check-in date (ISO format)
@@ -175,7 +178,7 @@ export function calculateNightsBetween(checkInValue, checkOutValue) {
         return 0;
     }
     const diffMs = checkOut.getTime() - checkIn.getTime();
-    return Math.max(0, Math.floor(diffMs / 86400000));
+    return Math.max(0, Math.floor(diffMs / MS_PER_DAY));
 }
 
 /**

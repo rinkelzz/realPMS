@@ -85,25 +85,36 @@ Time:        0.218 s</div>
     </div>
 
     <script type="module">
-        import { 
-            formatDate, 
-            formatDateTime, 
-            formatCurrency, 
-            escapeHtml,
-            calculateNightsBetween,
-            hexToRgb,
-            getReadableTextColor
-        } from './js/utils.js';
-        
-        import { 
-            state, 
-            CALENDAR_STATUS_ORDER, 
+        // Error handling for module loading
+        window.addEventListener('error', (event) => {
+            if (event.message && event.message.includes('module')) {
+                const errorDiv = document.createElement('div');
+                errorDiv.style.cssText = 'position: fixed; top: 20px; left: 50%; transform: translateX(-50%); background: #ef4444; color: white; padding: 1rem; border-radius: 8px; z-index: 1000;';
+                errorDiv.textContent = 'Fehler beim Laden der Module. Bitte stellen Sie sicher, dass Sie einen modernen Browser verwenden.';
+                document.body.appendChild(errorDiv);
+            }
+        });
+
+        try {
+            const { 
+                formatDate, 
+                formatDateTime, 
+                formatCurrency, 
+                escapeHtml,
+                calculateNightsBetween,
+                hexToRgb,
+                getReadableTextColor
+            } = await import('./js/utils.js');
+            
+            const { 
+                state, 
+                CALENDAR_STATUS_ORDER, 
             CALENDAR_COLOR_DEFAULTS,
             ARTICLE_SCHEME_LABELS
-        } from './js/state.js';
+            } = await import('./js/state.js');
 
-        // Demo 1: Utils
-        const utilsCode = `import { formatDate, formatCurrency, calculateNightsBetween } from './js/utils.js';
+            // Demo 1: Utils
+            const utilsCode = `import { formatDate, formatCurrency, calculateNightsBetween } from './js/utils.js';
 
 // Datum formatieren
 formatDate('2024-01-15');
@@ -116,21 +127,21 @@ calculateNightsBetween('2024-01-10', '2024-01-15');
 
 // HTML escapen (XSS-Schutz)
 escapeHtml('<script>alert("XSS")</script>');`;
-        
-        document.getElementById('utils-demo-code').textContent = utilsCode;
-        
-        const utilsResult = `
+            
+            document.getElementById('utils-demo-code').textContent = utilsCode;
+            
+            const utilsResult = `
 <span class="success">✓</span> formatDate('2024-01-15') → ${formatDate('2024-01-15')}
 <span class="success">✓</span> formatCurrency(1234.56, 'EUR') → ${formatCurrency(1234.56, 'EUR')}
 <span class="success">✓</span> calculateNightsBetween('2024-01-10', '2024-01-15') → ${calculateNightsBetween('2024-01-10', '2024-01-15')} Nächte
 <span class="success">✓</span> escapeHtml('<script>...') → ${escapeHtml('<script>alert("XSS")</script>')}
 <span class="success">✓</span> hexToRgb('#FF5733') → ${JSON.stringify(hexToRgb('#FF5733'))}
 <span class="success">✓</span> getReadableTextColor('#FFFFFF') → ${getReadableTextColor('#FFFFFF')}`;
-        
-        document.getElementById('utils-result').innerHTML = utilsResult;
+            
+            document.getElementById('utils-result').innerHTML = utilsResult;
 
-        // Demo 2: State
-        const stateCode = `import { state, CALENDAR_STATUS_ORDER, ARTICLE_SCHEME_LABELS } from './js/state.js';
+            // Demo 2: State
+            const stateCode = `import { state, CALENDAR_STATUS_ORDER, ARTICLE_SCHEME_LABELS } from './js/state.js';
 
 // Zugriff auf Konstanten
 CALENDAR_STATUS_ORDER;
@@ -144,19 +155,19 @@ CALENDAR_COLOR_DEFAULTS;
 // Zentraler Anwendungsstatus
 state.calendarLabelMode;
 state.calendarColors;`;
-        
-        document.getElementById('state-demo-code').textContent = stateCode;
-        
-        const stateResult = `
+            
+            document.getElementById('state-demo-code').textContent = stateCode;
+            
+            const stateResult = `
 <span class="success">✓</span> CALENDAR_STATUS_ORDER → ${JSON.stringify(CALENDAR_STATUS_ORDER)}
 <span class="success">✓</span> ARTICLE_SCHEME_LABELS.per_person_per_day → ${ARTICLE_SCHEME_LABELS.per_person_per_day}
 <span class="success">✓</span> state.calendarLabelMode → ${state.calendarLabelMode}
 <span class="success">✓</span> Kalenderfarben geladen: ${Object.keys(CALENDAR_COLOR_DEFAULTS).length} Status`;
-        
-        document.getElementById('state-result').innerHTML = stateResult;
+            
+            document.getElementById('state-result').innerHTML = stateResult;
 
-        // Demo 3: API
-        const apiCode = `import { apiFetch, loadReservations, searchGuests } from './js/api.js';
+            // Demo 3: API
+            const apiCode = `import { apiFetch, loadReservations, searchGuests } from './js/api.js';
 
 // API-Anfrage mit Authentifizierung
 const reservations = await apiFetch('reservations');
@@ -166,16 +177,31 @@ await loadReservations();
 
 // Gäste suchen
 await searchGuests('Mustermann', 10);`;
-        
-        document.getElementById('api-demo-code').textContent = apiCode;
-        
-        const apiResult = `
+            
+            document.getElementById('api-demo-code').textContent = apiCode;
+            
+            const apiResult = `
 <span class="info">ℹ</span> API-Layer bereit und einsatzfähig
 <span class="info">ℹ</span> Alle Funktionen authentifizieren automatisch mit X-API-Key
 <span class="info">ℹ</span> Fallback auf URL-Parameter bei 401-Fehler
 <span class="warning">⚠</span> Benötigt gültigen API-Token für Anfragen`;
-        
-        document.getElementById('api-result').innerHTML = apiResult;
+            
+            document.getElementById('api-result').innerHTML = apiResult;
+        } catch (error) {
+            console.error('Module loading error:', error);
+            document.body.innerHTML = `
+                <div style="max-width: 800px; margin: 50px auto; padding: 2rem; background: #fee; border: 2px solid #f00; border-radius: 8px;">
+                    <h2 style="color: #c00;">Fehler beim Laden der Module</h2>
+                    <p>Die Module konnten nicht geladen werden. Bitte prüfen Sie:</p>
+                    <ul>
+                        <li>Verwenden Sie einen modernen Browser mit ES6-Module-Support</li>
+                        <li>Laden Sie die Seite über einen Webserver (nicht file://)</li>
+                        <li>Alle Moduldateien sind vorhanden</li>
+                    </ul>
+                    <p><strong>Fehlerdetails:</strong> ${error.message}</p>
+                </div>
+            `;
+        }
     </script>
 </body>
 </html>

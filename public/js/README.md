@@ -62,6 +62,14 @@ Das Frontend wurde in kleinere, wartbare Module aufgeteilt, um die Codequalität
 
 ## Nutzung
 
+### Voraussetzungen
+
+**Browser**: Modernes Browser mit ES6-Module-Support (Chrome 61+, Firefox 60+, Safari 11+, Edge 16+)
+
+**Node.js** (für Tests): Version 14 oder höher empfohlen
+- Tests verwenden experimentelle VM-Module-Unterstützung
+- Dokumentiert in `package.json` mit entsprechendem Flag
+
 ### ES6-Module laden
 
 Die Module werden als ES6-Module geladen. In `index.html`:
