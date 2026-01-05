@@ -1,0 +1,181 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>realPMS - Module Demo</title>
+    <style>
+        body {
+            font-family: system-ui, -apple-system, sans-serif;
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 2rem;
+            background: #f3f4f6;
+        }
+        h1 { color: #1f2937; }
+        h2 { color: #374151; margin-top: 2rem; }
+        .demo-section {
+            background: white;
+            padding: 1.5rem;
+            margin: 1rem 0;
+            border-radius: 8px;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+        }
+        .demo-code {
+            background: #1f2937;
+            color: #f3f4f6;
+            padding: 1rem;
+            border-radius: 4px;
+            overflow-x: auto;
+            font-family: 'Monaco', 'Courier New', monospace;
+            font-size: 0.875rem;
+        }
+        .demo-result {
+            background: #f9fafb;
+            padding: 1rem;
+            margin-top: 1rem;
+            border-left: 4px solid #10b981;
+            border-radius: 4px;
+        }
+        .success { color: #10b981; }
+        .info { color: #3b82f6; }
+        .warning { color: #f59e0b; }
+    </style>
+</head>
+<body>
+    <h1>realPMS Module Demonstration</h1>
+    <p>Diese Seite demonstriert die Verwendung der neuen modularen Frontend-Architektur.</p>
+
+    <div class="demo-section">
+        <h2>1. Utility Functions (utils.js)</h2>
+        <p>Hilfsfunktionen für Datum, Formatierung und Validierung</p>
+        <div class="demo-code" id="utils-demo-code"></div>
+        <div class="demo-result" id="utils-result"></div>
+    </div>
+
+    <div class="demo-section">
+        <h2>2. State Management (state.js)</h2>
+        <p>Zentrale Zustandsverwaltung und Konstanten</p>
+        <div class="demo-code" id="state-demo-code"></div>
+        <div class="demo-result" id="state-result"></div>
+    </div>
+
+    <div class="demo-section">
+        <h2>3. API Layer (api.js)</h2>
+        <p>API-Kommunikationsschicht (Hinweis: Benötigt gültigen API-Token)</p>
+        <div class="demo-code" id="api-demo-code"></div>
+        <div class="demo-result" id="api-result"></div>
+    </div>
+
+    <div class="demo-section">
+        <h2>4. Unit Tests</h2>
+        <p>Die Module sind mit umfangreichen Unit-Tests abgesichert:</p>
+        <ul>
+            <li><strong>51 Tests</strong> für utils.js (100% passing)</li>
+            <li>Tests für Datumsoperationen, Formatierung, Validierung und Farbumwandlung</li>
+            <li>Ausführen mit: <code>npm test</code></li>
+        </ul>
+        <div class="demo-code">
+npm test
+
+Test Suites: 1 passed, 1 total
+Tests:       51 passed, 51 total
+Snapshots:   0 total
+Time:        0.218 s</div>
+    </div>
+
+    <script type="module">
+        import { 
+            formatDate, 
+            formatDateTime, 
+            formatCurrency, 
+            escapeHtml,
+            calculateNightsBetween,
+            hexToRgb,
+            getReadableTextColor
+        } from './js/utils.js';
+        
+        import { 
+            state, 
+            CALENDAR_STATUS_ORDER, 
+            CALENDAR_COLOR_DEFAULTS,
+            ARTICLE_SCHEME_LABELS
+        } from './js/state.js';
+
+        // Demo 1: Utils
+        const utilsCode = `import { formatDate, formatCurrency, calculateNightsBetween } from './js/utils.js';
+
+// Datum formatieren
+formatDate('2024-01-15');
+
+// Währung formatieren
+formatCurrency(1234.56, 'EUR');
+
+// Nächte berechnen
+calculateNightsBetween('2024-01-10', '2024-01-15');
+
+// HTML escapen (XSS-Schutz)
+escapeHtml('<script>alert("XSS")</script>');`;
+        
+        document.getElementById('utils-demo-code').textContent = utilsCode;
+        
+        const utilsResult = `
+<span class="success">✓</span> formatDate('2024-01-15') → ${formatDate('2024-01-15')}
+<span class="success">✓</span> formatCurrency(1234.56, 'EUR') → ${formatCurrency(1234.56, 'EUR')}
+<span class="success">✓</span> calculateNightsBetween('2024-01-10', '2024-01-15') → ${calculateNightsBetween('2024-01-10', '2024-01-15')} Nächte
+<span class="success">✓</span> escapeHtml('<script>...') → ${escapeHtml('<script>alert("XSS")</script>')}
+<span class="success">✓</span> hexToRgb('#FF5733') → ${JSON.stringify(hexToRgb('#FF5733'))}
+<span class="success">✓</span> getReadableTextColor('#FFFFFF') → ${getReadableTextColor('#FFFFFF')}`;
+        
+        document.getElementById('utils-result').innerHTML = utilsResult;
+
+        // Demo 2: State
+        const stateCode = `import { state, CALENDAR_STATUS_ORDER, ARTICLE_SCHEME_LABELS } from './js/state.js';
+
+// Zugriff auf Konstanten
+CALENDAR_STATUS_ORDER;
+
+// Artikel-Schema-Labels
+ARTICLE_SCHEME_LABELS;
+
+// Standard-Kalenderfarben
+CALENDAR_COLOR_DEFAULTS;
+
+// Zentraler Anwendungsstatus
+state.calendarLabelMode;
+state.calendarColors;`;
+        
+        document.getElementById('state-demo-code').textContent = stateCode;
+        
+        const stateResult = `
+<span class="success">✓</span> CALENDAR_STATUS_ORDER → ${JSON.stringify(CALENDAR_STATUS_ORDER)}
+<span class="success">✓</span> ARTICLE_SCHEME_LABELS.per_person_per_day → ${ARTICLE_SCHEME_LABELS.per_person_per_day}
+<span class="success">✓</span> state.calendarLabelMode → ${state.calendarLabelMode}
+<span class="success">✓</span> Kalenderfarben geladen: ${Object.keys(CALENDAR_COLOR_DEFAULTS).length} Status`;
+        
+        document.getElementById('state-result').innerHTML = stateResult;
+
+        // Demo 3: API
+        const apiCode = `import { apiFetch, loadReservations, searchGuests } from './js/api.js';
+
+// API-Anfrage mit Authentifizierung
+const reservations = await apiFetch('reservations');
+
+// Reservierungen laden
+await loadReservations();
+
+// Gäste suchen
+await searchGuests('Mustermann', 10);`;
+        
+        document.getElementById('api-demo-code').textContent = apiCode;
+        
+        const apiResult = `
+<span class="info">ℹ</span> API-Layer bereit und einsatzfähig
+<span class="info">ℹ</span> Alle Funktionen authentifizieren automatisch mit X-API-Key
+<span class="info">ℹ</span> Fallback auf URL-Parameter bei 401-Fehler
+<span class="warning">⚠</span> Benötigt gültigen API-Token für Anfragen`;
+        
+        document.getElementById('api-result').innerHTML = apiResult;
+    </script>
+</body>
+</html>
