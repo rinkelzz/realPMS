@@ -68,9 +68,13 @@ $segments = $path === '' ? [] : explode('/', $path);
 $resource = $segments[0] ?? '';
 
 if ($resource === '') {
+    // Generate CSRF token for authenticated requests
+    $csrfToken = generateCsrfToken();
+    
     jsonResponse([
         'name' => 'realPMS Prototype API',
         'version' => '0.1.0',
+        'csrf_token' => $csrfToken,
         'resources' => [
             'room-types',
             'rate-plans',
@@ -96,6 +100,8 @@ if ($resource === '') {
 $publicResources = ['guest-portal'];
 if (!in_array($resource, $publicResources, true)) {
     requireApiKey();
+    // Validate CSRF token for all state-changing requests on protected resources
+    validateCsrfToken();
 }
 
 switch ($resource) {

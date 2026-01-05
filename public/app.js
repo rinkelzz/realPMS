@@ -27,6 +27,7 @@ const RESERVATION_STATUS_ACTIONS = [
 
 const state = {
     token: null,
+    csrfToken: null,
     roomTypes: [],
     ratePlans: [],
     rooms: [],
@@ -314,6 +315,38 @@ async function apiFetch(path, options = {}) {
         }
         headers.set('X-API-Key', state.token);
     }
+    
+    // Add CSRF token for state-changing requests
+    const method = (options.method || 'GET').toUpperCase();
+    if (['POST', 'PUT', 'PATCH', 'DELETE'].includes(method)) {
+        if (!state.csrfToken) {
+            // CSRF token not yet available - this should rarely happen as tokens are 
+            // automatically fetched from response headers during bootstrap.
+            // This is a fallback for edge cases.
+            console.warn('[realPMS] CSRF token not available, fetching now...');
+            try {
+                const tempResponse = await fetch(API_BASE, {
+                    headers: { 'X-API-Key': state.token }
+                });
+                const csrfToken = tempResponse.headers.get('X-CSRF-Token');
+                if (csrfToken) {
+                    state.csrfToken = csrfToken;
+                    headers.set('X-CSRF-Token', csrfToken);
+                } else {
+                    const errorMsg = 'CSRF-Token konnte nicht abgerufen werden.';
+                    console.error('[realPMS]', errorMsg);
+                    throw new Error(errorMsg);
+                }
+            } catch (error) {
+                const errorMsg = 'CSRF-Token ist nicht verfügbar. Bitte laden Sie die Seite neu.';
+                console.error('[realPMS] Failed to fetch CSRF token:', error.message);
+                throw new Error(errorMsg);
+            }
+        } else {
+            headers.set('X-CSRF-Token', state.csrfToken);
+        }
+    }
+    
     if (options.body && !headers.has('Content-Type')) {
         headers.set('Content-Type', 'application/json');
     }
@@ -329,6 +362,14 @@ async function apiFetch(path, options = {}) {
         const fallbackUrl = `${baseUrl}${separator}token=${encodeURIComponent(state.token)}`;
         response = await fetch(fallbackUrl, { ...options, headers });
     }
+    
+    // Update CSRF token from response header if present
+    // This ensures we always have the latest token
+    const csrfTokenHeader = response.headers.get('X-CSRF-Token');
+    if (csrfTokenHeader) {
+        state.csrfToken = csrfTokenHeader;
+    }
+    
     if (!response.ok) {
         let message = `${response.status} ${response.statusText}`;
         try {
@@ -357,6 +398,7 @@ function setToken(token) {
         bootstrap();
     } else {
         localStorage.removeItem('realpms_api_token');
+        state.csrfToken = null;
         state.roomTypes = [];
         state.ratePlans = [];
         state.rooms = [];
