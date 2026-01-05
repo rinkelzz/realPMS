@@ -320,8 +320,10 @@ async function apiFetch(path, options = {}) {
     const method = (options.method || 'GET').toUpperCase();
     if (['POST', 'PUT', 'PATCH', 'DELETE'].includes(method)) {
         if (!state.csrfToken) {
-            // CSRF token not yet available, try to fetch it first
-            console.warn('[realPMS] CSRF token not available, fetching...');
+            // CSRF token not yet available - this should rarely happen as tokens are 
+            // automatically fetched from response headers during bootstrap.
+            // This is a fallback for edge cases.
+            console.warn('[realPMS] CSRF token not available, fetching now...');
             try {
                 const tempResponse = await fetch(API_BASE, {
                     headers: { 'X-API-Key': state.token }
@@ -331,10 +333,14 @@ async function apiFetch(path, options = {}) {
                     state.csrfToken = csrfToken;
                     headers.set('X-CSRF-Token', csrfToken);
                 } else {
-                    throw new Error('CSRF-Token konnte nicht abgerufen werden.');
+                    const errorMsg = 'CSRF-Token konnte nicht abgerufen werden.';
+                    console.error('[realPMS]', errorMsg);
+                    throw new Error(errorMsg);
                 }
             } catch (error) {
-                throw new Error('CSRF-Token ist nicht verfügbar. Bitte laden Sie die Seite neu.');
+                const errorMsg = 'CSRF-Token ist nicht verfügbar. Bitte laden Sie die Seite neu.';
+                console.error('[realPMS] Failed to fetch CSRF token:', error.message);
+                throw new Error(errorMsg);
             }
         } else {
             headers.set('X-CSRF-Token', state.csrfToken);
@@ -358,6 +364,7 @@ async function apiFetch(path, options = {}) {
     }
     
     // Update CSRF token from response header if present
+    // This ensures we always have the latest token
     const csrfTokenHeader = response.headers.get('X-CSRF-Token');
     if (csrfTokenHeader) {
         state.csrfToken = csrfTokenHeader;
